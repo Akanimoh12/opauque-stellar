@@ -1,6 +1,6 @@
 # ADR-0002: Browser-side DKSAP scanner in WASM
 
-**Date:** 2024-01-20  
+**Date:** 2026-07-24  
 **Status:** Accepted  
 **Context:** Local receipt discovery without hosted scanning service
 

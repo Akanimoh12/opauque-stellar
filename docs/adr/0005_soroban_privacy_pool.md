@@ -1,6 +1,6 @@
 # ADR-0005: Soroban smart contracts for privacy pool enforcement
 
-**Date:** 2024-01-25  
+**Date:** 2026-06-15  
 **Status:** Accepted  
 **Context:** On-chain state transitions and proof verification for privacy pool
 

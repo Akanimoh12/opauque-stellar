@@ -1,6 +1,6 @@
 # ADR-0001: Off-chain published roots for pool state and association sets
 
-**Date:** 2024-01-15  
+**Date:** 2026-06-15  
 **Status:** Accepted  
 **Context:** Privacy pool state verification without smart contract root storage
 
