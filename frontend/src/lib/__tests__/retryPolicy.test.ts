@@ -11,6 +11,7 @@ import {
   backoffDelayMs,
   extractStatus,
   getDefaultRetryPolicy,
+  isNotFoundError,
   isRetryableRpcError,
   policyForMethod,
   resetDefaultRetryPolicy,
@@ -272,5 +273,41 @@ describe("runWithRetryPolicy (#561)", () => {
   it("leaves a non-retry error untouched when passed through underlyingError", () => {
     const plain = new Error("plain");
     expect(underlyingError(plain)).toBe(plain);
+  });
+});
+
+describe("isNotFoundError (#999)", () => {
+  it("reports a 404 as a definitive not-found", () => {
+    expect(isNotFoundError(httpError(404))).toBe(true);
+    expect(isNotFoundError(Object.assign(new Error("404"), { status: 404 }))).toBe(true);
+  });
+
+  it("unwraps a retry envelope, whose own status is absent", () => {
+    const exhausted = new RpcRetriesExhaustedError({
+      message: "Horizon.loadAccount failed across 1 provider(s): HTTP 404",
+      method: "loadAccount",
+      attempts: 3,
+      providersTried: 1,
+      elapsedMs: 12,
+      cause: httpError(404, "Account not found"),
+    });
+    expect(extractStatus(exhausted)).toBeNull();
+    expect(isNotFoundError(exhausted)).toBe(true);
+  });
+
+  // The regression that motivated #999: these are *unknowns*, not negatives.
+  it.each([429, 500, 502, 503, 504, 408, 400])(
+    "does not treat HTTP %i as a not-found",
+    (status) => {
+      expect(isNotFoundError(httpError(status))).toBe(false);
+    },
+  );
+
+  it("does not treat a transport failure as a not-found", () => {
+    expect(isNotFoundError(new Error("network request failed"))).toBe(false);
+    expect(isNotFoundError(new Error("request timed out"))).toBe(false);
+    expect(isNotFoundError("nope")).toBe(false);
+    expect(isNotFoundError(undefined)).toBe(false);
+    expect(isNotFoundError(null)).toBe(false);
   });
 });

@@ -153,7 +153,7 @@ Friendbot directly.
 ## Related docs
 
 - [`README.md`](../README.md) — full local setup
-- [`docs/CONTRIBUTING.md`](CONTRIBUTING.md) — contributor quick start, links here
+- [`.github/CONTRIBUTING.md`](../.github/CONTRIBUTING.md) — contributor quick start, links here
 - [`deployments/README.md`](../deployments/README.md) — canonical contract IDs per network
 - [`frontend/.env.example`](../frontend/.env.example) — network/env configuration
 - [`docs/testnet-slos.md`](testnet-slos.md) — testnet service health objectives (for off-chain services, not funding)

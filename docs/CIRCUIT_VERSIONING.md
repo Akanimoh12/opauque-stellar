@@ -188,7 +188,7 @@ after the admin deprecation transaction confirms on-chain.
 
 ## References
 
-- [EVENT_VERSIONING.md](EVENT_VERSIONING.md) — event schema versioning, including `VerifierDeprecated`
-- [STORAGE_VERSIONING.md](STORAGE_VERSIONING.md) — contract storage layout versioning
+- [ADR-0006](adr/0006_event_abi_versioning_policy.md) — event schema versioning, including `VerifierDeprecated`
+- [CIRCUIT_VERSIONING.md](CIRCUIT_VERSIONING.md) — circuit (verifying-key) versioning, superset and adoption rules
 - [NULLIFIER_SPEC.md](NULLIFIER_SPEC.md) — note commitment includes `version_id`
 - [TRUSTED_SETUP_CEREMONY.md](TRUSTED_SETUP_CEREMONY.md) — ceremony plan for new verifying keys

@@ -9,23 +9,48 @@ Deposits can be excluded from the Opaque approved set due to:
 - **Policy violations**: Deposits that don't meet current inclusion criteria
 - **Detection evasion attempts**: Transactions attempting to obscure intent
 
-Excluded funds are **not lost** — they remain under your control via your stealth keys.
+Exclusion does not destroy funds, but it does remove your ability to withdraw them on
+your own. See [What exclusion does and does not do](#what-exclusion-does-and-does-not-do)
+below before assuming you can simply withdraw.
+
+## What exclusion does and does not do
+
+An exclusion applies to a **privacy-pool deposit** — a note committed into the pool
+tree — not to a balance sitting in a stealth address. The two have different
+controlling keys:
+
+| What you hold | Controlling key | Can you reach it while excluded? |
+|:--------------|:----------------|:----------------------------------|
+| Pooled deposit (note) | Note key | **No** — withdrawal needs a valid membership proof |
+| Stealth account balance | Stealth / wallet key | Yes, independently of any pool exclusion |
+
+A withdrawal from the pool requires a Groth16 membership proof built from a Merkle
+path into the published association-set root. An excluded deposit index is omitted
+from that set, so **no valid membership proof exists for it** and no withdrawal path
+is available — not immediately, not after re-deriving keys, and not with a stale or
+refreshed root. Stealth key derivation is irrelevant here: it recovers *stealth
+addresses*, which never held the pooled deposit in the first place.
+
+There is no operator-held key, escrow, or claim process that can return an excluded
+deposit. **The only route back to your funds is reversing the exclusion** (Option 1
+below). Until then the deposit is held in the pool but unspendable by you.
+
+The flip side: an exclusion is not a loss of key material. If the exclusion is
+reversed, the note is spendable again with the note key you already hold — provided
+you still have it. Note keys are only recoverable from your own backup; there is no
+server-side recovery path (see
+[docs/SUPPORT_PLAYBOOK.md](SUPPORT_PLAYBOOK.md) and
+[docs/KEY_MANAGEMENT_GUIDE.md](KEY_MANAGEMENT_GUIDE.md#backup-practices)).
 
 ## Recovery Options
 
-### Option 1: Direct Withdrawal (Self-Custody)
-Your funds are always accessible via stealth key derivation:
+### Option 1: Appeal for Inclusion Review
 
-1. Go to your wallet's **Stealth Keys** section
-2. Navigate to **View Master Keys** → export your recovery seed
-3. Use the DKSAP derivation with your master keys to recover the ephemeral account
-4. Transfer funds to your main wallet address
-5. [Detailed stealth recovery guide](frontend/README.md#recovery)
+This is the only option that can return an excluded deposit to you. If the deposit
+was excluded in error — or if the exclusion was a policy decision you can rebut —
+the deposit must be restored to the approved set before any proof can be generated.
 
-**Timeline**: Immediate (same ledger)  
-**Trust model**: Self-custody — no operator involvement
-
-### Option 2: Appeal for Inclusion Review
+If you believe your deposit was wrongly excluded:
 If you believe your deposit was wrongly excluded:
 
 1. **Gather evidence**:
@@ -46,11 +71,11 @@ If you believe your deposit was wrongly excluded:
    - Decision notification: Email with outcome
 
 4. **Possible outcomes**:
-   - **Approved**: Deposit restored to approved set; proof generation succeeds
-   - **Denied**: Withdrawal remains only option (see Option 1)
+   - **Approved**: Deposit restored to approved set; a membership proof can be generated against the republished root and the note is spendable again
+   - **Denied**: The deposit stays excluded and remains unspendable. There is no alternative withdrawal path — re-check your note-key backup, and see the appeal/audit references under [ASP Allowlist Exclusions](#asp-allowlist-exclusions)
    - **Escalation**: Senior review if you provide additional evidence
 
-### Option 3: Bulk Disputes
+### Option 2: Bulk Disputes
 If multiple deposits were excluded:
 
 1. Contact operator with list of transaction hashes and a single narrative explaining the pattern
@@ -61,18 +86,20 @@ If multiple deposits were excluded:
 
 | Action | Timeline | Guarantee |
 |--------|----------|-----------|
-| Self-withdrawal via stealth keys | Immediate | ✓ No permission needed |
+| Withdrawing an **excluded** deposit | Not possible | No path exists while the deposit is outside the approved set |
 | Appeal submission | Ongoing | None; best-effort review |
 | Initial review response | 5–10 days | None; SLA TBD |
 | Final decision | ≤30 days | None; depends on case complexity |
+| Withdrawal after an approved appeal | Next ASP republish | None; depends on the note key still being available to you |
 
 ## After Exclusion: Proofs & Reputation
 
 While your deposit is excluded:
 
-- **Proof generation**: Fails with "root not fresh" or similar if using stale data
+- **Pool membership proofs**: Cannot be generated at all. The excluded index is not in the published association set, so there is no Merkle path to build a proof from. This is a missing-set condition, not a stale-root one — refreshing the root does not help.
 - **Reputation**: Your credential attestations are unaffected; you can still prove reputation
 - **Nullifiers**: Previous proofs remain valid; no replay risk
+- **Stealth balances**: Unaffected — a private payment arriving in a stealth address is still yours to scan and sweep, independent of any pool exclusion
 
 ## Prevention
 
@@ -86,14 +113,15 @@ To minimize exclusion risk:
 ## Support
 
 - **Bug or contract issue?** → Report in [GitHub Issues](https://github.com/collinsadi/opaque-stellar/issues)
-- **Appeal status?** → Contact operator (see Option 2)
-- **How to withdraw via keys?** → [Stealth recovery guide](frontend/README.md#recovery)
+- **Appeal status?** → Contact operator (see Option 1)
+- **Lost a note key or wallet seed?** → [Backup practices](KEY_MANAGEMENT_GUIDE.md#backup-practices) and the [support playbook](SUPPORT_PLAYBOOK.md). There is no server-side recovery; only your own backup can restore a note key
+- **Recovering a stealth address?** → [Key management guide](KEY_MANAGEMENT_GUIDE.md#stealth-key). Note this is *not* a route to an excluded pool deposit
 - **Questions about the protocol?** → Read [README.md](../README.md)
 
 ---
 
-**Version**: 1.0  
-**Last updated**: 2026-07-25  
+**Version**: 1.1  
+**Last updated**: 2026-09-26  
 **Status**: Draft — operator contact details TBD
 
 ## ASP Allowlist Exclusions

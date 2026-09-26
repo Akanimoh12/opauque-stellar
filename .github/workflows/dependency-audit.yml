@@ -3,7 +3,7 @@ name: Dependency Audit
 # Scheduled, non-PR-blocking supply-chain scan (#646). Catches advisories
 # published against already-merged dependency versions — routine version
 # updates are handled separately by dependabot.yml on a monthly cadence.
-# See .github/CONTRIBUTING.md § 9 (Dependency update policy) for response
+# See .github/CONTRIBUTING.md § 12 (Dependency update policy) for response
 # windows by severity.
 #
 # The Rust WASM build chain (scanner/, compiled with wasm-pack) is audited

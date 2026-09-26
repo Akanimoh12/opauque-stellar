@@ -54,7 +54,7 @@ Machine-readable status page: <link, if available>
   verify they're looking at the same deployment.
 - If the incident stems from an off-chain service falling outside its
   objective, link the specific service and objective from
-  [`docs/testnet-slos.md`](../testnet-slos.md) rather than re-describing it.
+  [`docs/testnet-slos.md`](../../testnet-slos.md) rather than re-describing it.
 - Keep the `Status` field values stable release-over-release
   (`operational`, `degraded_performance`, `partial_outage`, `major_outage`,
   `under_maintenance`) so integrators can key automation off them.

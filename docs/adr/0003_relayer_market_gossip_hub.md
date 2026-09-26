@@ -109,7 +109,7 @@ without protocol-level changes. The current gateway topic is
   but not the withdrawal amount or recipient (those travel in the encrypted
   payload)
 
-See [ADR-0008](0008_http_gossip_over_libp2p.md) for the full rationale for
+See [ADR-0011](0011_http_gossip_over_libp2p.md) for the full rationale for
 choosing HTTP over libp2p and the conditions under which the transport
 decision should be revisited.
 

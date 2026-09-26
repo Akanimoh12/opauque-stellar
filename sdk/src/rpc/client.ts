@@ -70,6 +70,20 @@ function extractResourceUsage(transactionData: {
   }
 }
 
+/** Pull an HTTP status off the many shapes stellar-sdk / fetch errors take. */
+function extractStatus(err: unknown): number | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as {
+    status?: unknown;
+    statusCode?: unknown;
+    response?: { status?: unknown };
+  };
+  for (const candidate of [e.status, e.statusCode, e.response?.status]) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return null;
+}
+
 function isRetryableReadError(err: unknown): boolean {
   const status =
     typeof err === "object" && err !== null && "response" in err
@@ -197,7 +211,18 @@ export class RpcClient {
     try {
       await this.horizon().loadAccount(publicKey);
       return true;
-    } catch {
+    } catch (err) {
+      // Only a definitive 404 means "no such account". A 429, 5xx, timeout, or
+      // dropped connection is an *unknown*, and reporting `false` for those makes
+      // `sendNativeTransfer` build a `createAccount` against an account that
+      // already exists — burning the fee before failing with `ALREADY_EXIST`.
+      const status = extractStatus(err);
+      if (status !== 404) {
+        throw new RpcError(`Account lookup failed for ${publicKey}`, {
+          ...(status === null ? {} : { httpStatus: status }),
+          cause: err,
+        });
+      }
       return false;
     }
   }
