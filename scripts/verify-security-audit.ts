@@ -3,9 +3,9 @@
  * Validates mainnet security audit findings and signoff status.
  *
  * Usage:
- *   node scripts/verify-security-audit.mjs
- *   node scripts/verify-security-audit.mjs --network mainnet
- *   node scripts/verify-security-audit.mjs --network mainnet --require-approved
+ *   npm run verify:security-audit
+ *   npx tsx scripts/verify-security-audit.ts --network mainnet
+ *   npx tsx scripts/verify-security-audit.ts --network mainnet --require-approved
  */
 
 import { readFileSync, existsSync } from "node:fs";

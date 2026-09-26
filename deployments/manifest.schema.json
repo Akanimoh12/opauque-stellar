@@ -90,7 +90,8 @@
         "attestationEngineV2": { "$ref": "#/$defs/contractRecord" },
         "poolVerifier": { "$ref": "#/$defs/contractRecord" },
         "privacyPool": { "$ref": "#/$defs/contractRecord" },
-        "relayerRegistry": { "$ref": "#/$defs/contractRecord" }
+        "relayerRegistry": { "$ref": "#/$defs/contractRecord" },
+        "multisigAdmin": { "$ref": "#/$defs/contractRecord" }
       }
     },
     "artifacts": {
@@ -115,9 +116,11 @@
         "circuits": {
           "type": "object",
           "required": ["v1", "v2"],
+          "additionalProperties": false,
           "properties": {
             "v1": { "$ref": "#/$defs/circuitArtifactRecord" },
-            "v2": { "$ref": "#/$defs/circuitArtifactRecord" }
+            "v2": { "$ref": "#/$defs/circuitArtifactRecord" },
+            "v3": { "$ref": "#/$defs/circuitArtifactRecord" }
           }
         }
       }
@@ -158,11 +161,11 @@
       "additionalProperties": false,
       "properties": {
         "id": {
-          "type": "string",
+          "type": ["string", "null"],
           "pattern": "^(|C[A-Z2-7]{55})$"
         },
         "wasmHash": {
-          "type": "string",
+          "type": ["string", "null"],
           "pattern": "^(|[a-f0-9]{64})$",
           "description": "SHA-256 hex of deployed WASM artifact"
         },

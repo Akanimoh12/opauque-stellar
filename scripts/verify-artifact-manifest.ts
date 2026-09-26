@@ -3,11 +3,11 @@
  * Verify local artifacts against artifacts/manifest.json.
  *
  * Usage:
- *   node scripts/verify-artifact-manifest.mjs
- *   node scripts/verify-artifact-manifest.mjs --scanner
- *   node scripts/verify-artifact-manifest.mjs --circuits --strict
- *   node scripts/verify-artifact-manifest.mjs --frontend-circuits --strict
- *   node scripts/verify-artifact-manifest.mjs --scanner --strict
+ *   npm run verify:artifacts
+ *   npx tsx scripts/verify-artifact-manifest.ts --scanner
+ *   npx tsx scripts/verify-artifact-manifest.ts --circuits --strict
+ *   npx tsx scripts/verify-artifact-manifest.ts --frontend-circuits --strict
+ *   npx tsx scripts/verify-artifact-manifest.ts --scanner --strict
  *   node scripts/verify-artifact-manifest.mjs --vk-binding
  */
 

@@ -4,9 +4,9 @@
  * Skips files that already match the manifest hash.
  *
  * Usage:
- *   node scripts/fetch-circuit-artifacts.mjs
- *   node scripts/fetch-circuit-artifacts.mjs --force
- *   CIRCUIT_ARTIFACTS_BASE_URL=https://... node scripts/fetch-circuit-artifacts.mjs
+ *   npm run fetch:circuits
+ *   npx tsx scripts/fetch-circuit-artifacts.ts --force
+ *   CIRCUIT_ARTIFACTS_BASE_URL=https://... npx tsx scripts/fetch-circuit-artifacts.ts
  */
 
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";

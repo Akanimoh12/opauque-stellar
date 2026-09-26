@@ -2,7 +2,7 @@
 /**
  * Prints GitHub Actions / shell env exports from a deployment manifest.
  *
- * Usage: eval "$(node scripts/export-manifest-env.mjs testnet)"
+ * Usage: eval "$(npx tsx scripts/export-manifest-env.ts testnet)"
  */
 
 import { readFileSync } from "node:fs";

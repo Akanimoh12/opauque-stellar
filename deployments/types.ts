@@ -13,12 +13,62 @@ export type ContractKey =
   | "groth16Verifier"
   | "reputationVerifier"
   | "schemaRegistry"
-  | "attestationEngineV2";
+  | "attestationEngineV2"
+  | "poolVerifier"
+  | "privacyPool"
+  | "relayerRegistry"
+  | "multisigAdmin";
 
 export type ContractRecord = {
   id: string;
   wasmHash: string;
   package?: string;
+};
+
+export type CircuitArtifact = {
+  witnessWasmHash: string | null;
+  zkeyHash: string | null;
+  r1csHash: string | null;
+  verificationKeyHash: string | null;
+  contractVkHash: string | null;
+  zkeyHashBinding: string | null;
+};
+
+export type ReputationVerifierWiring = {
+  admin: string;
+  groth16Verifier: string;
+};
+
+export type AttestationEngineWiring = {
+  admin: string;
+  governance?: string;
+  schemaRegistry: string;
+  version?: number;
+};
+
+export type PrivacyPoolWiring = {
+  admin: string;
+  groth16Verifier: string;
+  nativeSac: string;
+  scope: number;
+  depositPresetsXlm?: number[];
+};
+
+export type RelayerRegistryWiring = {
+  admin: string;
+  nativeSac: string;
+  privacyPool: string;
+  gatewayUrls?: string[];
+  minimumStake: number;
+  unstakeCooldownLedgers: number;
+  maxDeadlineLedgers: number;
+};
+
+export type WiringBlock = {
+  reputationVerifier?: ReputationVerifierWiring;
+  attestationEngineV2?: AttestationEngineWiring;
+  privacyPool?: PrivacyPoolWiring;
+  relayerRegistry?: RelayerRegistryWiring;
 };
 
 export type DeploymentManifestV1 = {
@@ -33,6 +83,7 @@ export type DeploymentManifestV1 = {
   deployer: string | null;
   admin: string | null;
   multisig: string | null;
+  wiring: WiringBlock | null;
   deploymentStatus: DeploymentStatus;
   contracts: Record<ContractKey, ContractRecord>;
   artifacts: {
@@ -40,14 +91,16 @@ export type DeploymentManifestV1 = {
       buildCommit: string | null;
       repository?: string;
     };
+    scanner?: {
+      wasmHash: string | null;
+    };
     circuits: {
-      v2: {
-        r1csHash: string | null;
-        verificationKeyHash: string | null;
-      };
+      v1: CircuitArtifact;
+      v2: CircuitArtifact;
+      v3?: CircuitArtifact;
     };
   };
-  verification: {
+  verification?: {
     command: string;
     output: string | null;
   };
@@ -60,6 +113,10 @@ export const CONTRACT_KEYS: readonly ContractKey[] = [
   "reputationVerifier",
   "schemaRegistry",
   "attestationEngineV2",
+  "poolVerifier",
+  "privacyPool",
+  "relayerRegistry",
+  "multisigAdmin",
 ] as const;
 
 export const CONTRACT_ENV_SUFFIX: Record<ContractKey, string> = {
@@ -69,6 +126,10 @@ export const CONTRACT_ENV_SUFFIX: Record<ContractKey, string> = {
   reputationVerifier: "REPUTATION_VERIFIER_CONTRACT",
   schemaRegistry: "SCHEMA_REGISTRY_CONTRACT",
   attestationEngineV2: "ATTESTATION_ENGINE_CONTRACT",
+  poolVerifier: "POOL_VERIFIER_CONTRACT",
+  privacyPool: "PRIVACY_POOL_CONTRACT",
+  relayerRegistry: "RELAYER_REGISTRY_CONTRACT",
+  multisigAdmin: "MULTISIG_ADMIN_ADDRESS",
 };
 
 export function contractEnvKey(network: DeploymentNetwork, key: ContractKey): string {

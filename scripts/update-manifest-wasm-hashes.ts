@@ -2,7 +2,7 @@
 /**
  * Writes SHA-256 WASM hashes from stellar contract build output into the manifest.
  *
- * Usage: node scripts/update-manifest-wasm-hashes.mjs --network testnet
+ * Usage: npx tsx scripts/update-manifest-wasm-hashes.ts --network testnet
  */
 
 import { createHash } from "node:crypto";

@@ -4,9 +4,9 @@
  * Optionally syncs circuit/scanner hashes into deployments/v1/*.json.
  *
  * Usage:
- *   node scripts/update-artifact-manifest.mjs
- *   node scripts/update-artifact-manifest.mjs --sync-deployments
- *   node scripts/update-artifact-manifest.mjs --embedded-vk
+ *   npm run update:artifacts
+ *   npx tsx scripts/update-artifact-manifest.ts --sync-deployments
+ *   npx tsx scripts/update-artifact-manifest.ts --embedded-vk
  */
 
 import { existsSync } from "node:fs";
