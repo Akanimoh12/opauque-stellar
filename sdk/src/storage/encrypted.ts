@@ -247,7 +247,11 @@ export class EncryptedVaultStore implements VaultStore {
   }
 }
 
-/** Encrypted {@link ScanStore}: the cursor is stored as one encrypted blob per write. */
+/**
+ * Encrypted {@link ScanStore}: the cursor map is stored as one encrypted blob
+ * per write, keyed per identity so a client watching several stealth
+ * identities keeps each one's position separately.
+ */
 export class EncryptedScanStore implements ScanStore {
   constructor(
     private readonly backend: EncryptedStorageBackend,
@@ -255,13 +259,28 @@ export class EncryptedScanStore implements ScanStore {
     private readonly key = "opaque:scan-cursor",
   ) {}
 
-  async getCursor(): Promise<number | null> {
+  private async load(): Promise<Record<string, number>> {
     const raw = await this.backend.read(this.key);
-    if (!raw) return null;
-    return decryptEnvelope<number | null>(raw, this.password);
+    if (!raw) return {};
+    const stored = await decryptEnvelope<Record<string, number> | number | null>(
+      raw,
+      this.password,
+    );
+    // A pre-keying store persisted a bare number; keep it readable as the
+    // unkeyed cursor rather than failing the scan that resumes from it.
+    if (typeof stored === "number") return { "": stored };
+    if (typeof stored === "object" && stored !== null) return stored;
+    return {};
   }
 
-  async setCursor(ledger: number): Promise<void> {
-    await this.backend.write(this.key, JSON.stringify(await encryptEnvelope(ledger, this.password)));
+  async getCursor(identity = ""): Promise<number | null> {
+    const cursors = await this.load();
+    return cursors[identity] ?? null;
+  }
+
+  async setCursor(ledger: number, identity = ""): Promise<void> {
+    const cursors = await this.load();
+    cursors[identity] = ledger;
+    await this.backend.write(this.key, JSON.stringify(await encryptEnvelope(cursors, this.password)));
   }
 }

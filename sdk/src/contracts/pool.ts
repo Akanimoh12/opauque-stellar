@@ -6,7 +6,7 @@
 import { scValToNative, xdr } from "@stellar/stellar-sdk";
 import type { ContractInvoker, SimulationReport } from "../rpc/client";
 import type { OpaqueSigner } from "../signer/index";
-import { NotWiredError } from "../errors/index";
+import { NotWiredError, SimulationError } from "../errors/index";
 import {
   addressToScVal,
   boolToScVal,
@@ -14,7 +14,7 @@ import {
   i128ToScVal,
   u64ToScVal,
 } from "../rpc/scval";
-import { parseOldestLedgerFromRangeError } from "../rpc/diagnostics";
+import { paginateContractEvents } from "../rpc/events";
 
 const POOL_EVENT_LOOKBACK = 16_000;
 
@@ -25,6 +25,39 @@ export interface PoolConfig {
   nativeSac: string;
   scope: number;
   rootExpiryLedgers: number;
+}
+
+/** Pool custody counters, as read by `get_custody`. */
+export interface PoolCustody {
+  /** Lifetime total deposited, in the pool's native asset's smallest unit. */
+  totalDeposited: bigint;
+  /** Lifetime total withdrawn, in the pool's native asset's smallest unit. */
+  totalWithdrawn: bigint;
+  /** `totalDeposited - totalWithdrawn` — what the pool is still holding. */
+  netHeld: bigint;
+}
+
+/** Commitment-tree capacity, as read by `get_tree_capacity_info`. */
+export interface TreeCapacityInfo {
+  maxCapacity: number;
+  currentCount: number;
+  depth: number;
+  /** Ledger timestamp (unix seconds) of the last capacity update. */
+  lastUpdated: number;
+  /** `currentCount / maxCapacity` as a fraction (0 when there is no capacity). */
+  utilization: number;
+}
+
+/** A pending or active withdrawal pause request, as read by `get_withdrawal_pause_request`. */
+export interface WithdrawalPauseRequest {
+  /** Ledger the admin requested the pause at; 0 when none is pending. */
+  requestedAt: number;
+  /** Ledger the pause actually takes effect at (after the timelock); 0 when none is pending. */
+  activatesAt: number;
+  /** True when a pause has been requested and is still in effect. */
+  pending: boolean;
+  /** Ledgers left until `activatesAt`; 0 once it has passed or with no request. */
+  ledgersUntilActivation: number;
 }
 
 export interface PoolWithdrawInputs {
@@ -39,6 +72,41 @@ export interface PoolWithdrawInputs {
   recipient: string;
   fee: bigint;
   relayer: string;
+}
+
+/** The reconstructed pool state, plus whether the read that produced it was whole. */
+export interface PoolStateReconstruction {
+  stateLeaves: bigint[];
+  depositIndices: number[];
+  /**
+   * False when the event page cap stopped a topic's scan with events left
+   * unread: the leaves cover only part of the tree, so a proof built from them
+   * would be against a root the pool never published. Absent the cap, a scan
+   * of the retained window is complete by construction.
+   */
+  complete: boolean;
+  /** Per-topic cursors to resume a truncated read from. */
+  continuation?: PoolStateContinuation;
+}
+
+/** Opaque `getEvents` cursors for the pool's Deposit/Withdraw topics. */
+export interface PoolStateContinuation {
+  deposit?: string;
+  withdraw?: string;
+}
+
+/** Options for {@link PrivacyPool.reconstructState}. */
+export interface ReconstructStateOptions {
+  /** First ledger to read (inclusive). Defaults to a lookback window. */
+  startLedger?: number;
+  /** Event page cap per topic (default `EVENT_PAGE_LIMIT`). */
+  maxPages?: number;
+  /**
+   * How to report a scan stopped by the page cap: `"throw"` (default) raises
+   * `EventTruncationError`, `"return"` hands back the partial leaves with
+   * `complete: false` and the cursors to continue from. Never silent either way.
+   */
+  onTruncation?: "throw" | "return";
 }
 
 export class PrivacyPool {
@@ -220,18 +288,174 @@ export class PrivacyPool {
     return Boolean(spent);
   }
 
-  /** Read the latest published state (or ASP) root, or null if none. */
+  /**
+   * Read the latest published state (or ASP) root, or null when none is.
+   *
+   * "None yet" is a normal state for a young pool, and the contract reports it
+   * by reverting (`UnknownStateRoot` / `UnknownAspRoot`) rather than returning
+   * an empty value — so that one revert is translated to `null`. Every other
+   * failure still propagates: a coverage check that swallowed real errors would
+   * be worse than no check at all.
+   */
   async getLatestRoot(opts: {
     source: string;
     kind: "state" | "asp";
   }): Promise<Uint8Array | null> {
-    const root = await this.rpc.readNative<Uint8Array | undefined>({
-      source: opts.source,
+    try {
+      const root = await this.rpc.readNative<Uint8Array | undefined>({
+        source: opts.source,
+        contractId: this.contractId,
+        method: "get_latest_root",
+        args: [boolToScVal(opts.kind === "state")],
+      });
+      return root ? Uint8Array.from(root) : null;
+    } catch (err) {
+      const diagnostics =
+        err instanceof SimulationError ? (err.diagnostics ?? "") : "";
+      const unpublished = opts.kind === "state" ? /UnknownStateRoot/i : /UnknownAspRoot/i;
+      if (unpublished.test(diagnostics)) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Whether the contract knows `root` as a published state root
+   * (`is_known_state_root`). A root the pool has never published cannot be
+   * proven against, so this is the cheap pre-check before spending proving time
+   * on a withdrawal built from a root an ASP published late, reorged, or never.
+   *
+   * Note this tests that the root is *known*, not that it is still fresh —
+   * freshness (`root_expiry_ledgers`) is enforced inside `withdraw`.
+   */
+  async isKnownStateRoot(opts: { source: string; root: Uint8Array }): Promise<boolean> {
+    return this.isKnownRoot("is_known_state_root", opts.source, opts.root);
+  }
+
+  /** Whether the contract knows `root` as a published ASP root (`is_known_asp_root`). */
+  async isKnownAspRoot(opts: { source: string; root: Uint8Array }): Promise<boolean> {
+    return this.isKnownRoot("is_known_asp_root", opts.source, opts.root);
+  }
+
+  private async isKnownRoot(
+    method: "is_known_state_root" | "is_known_asp_root",
+    source: string,
+    root: Uint8Array,
+  ): Promise<boolean> {
+    const known = await this.rpc.readNative<boolean | undefined>({
+      source,
       contractId: this.contractId,
-      method: "get_latest_root",
-      args: [boolToScVal(opts.kind === "state")],
+      method,
+      args: [bytesToScVal(root)],
     });
-    return root ? Uint8Array.from(root) : null;
+    return Boolean(known);
+  }
+
+  /** Whether new deposits are currently paused (`is_deposits_paused`). */
+  async isDepositsPaused(source: string): Promise<boolean> {
+    return Boolean(
+      await this.rpc.readNative<boolean | undefined>({
+        source,
+        contractId: this.contractId,
+        method: "is_deposits_paused",
+        args: [],
+      }),
+    );
+  }
+
+  /**
+   * Whether withdrawals are currently paused (`is_withdrawals_paused`). The
+   * pause is derived from the timelock, not latched: it flips exactly
+   * {@link WithdrawalPauseRequest.activatesAt} ledgers after the request, with
+   * no extra transaction in between.
+   */
+  async isWithdrawalsPaused(source: string): Promise<boolean> {
+    return Boolean(
+      await this.rpc.readNative<boolean | undefined>({
+        source,
+        contractId: this.contractId,
+        method: "is_withdrawals_paused",
+        args: [],
+      }),
+    );
+  }
+
+  /**
+   * The pending withdrawal-pause request (`get_withdrawal_pause_request`) with
+   * the countdown to when withdrawals actually stop, or `pending: false` when
+   * none was requested. Lets a UI warn about an approaching pause instead of
+   * discovering it as a failed withdrawal.
+   */
+  async getWithdrawalPauseRequest(
+    source: string,
+  ): Promise<WithdrawalPauseRequest> {
+    const raw = await this.rpc.readNative<[number, number]>({
+      source,
+      contractId: this.contractId,
+      method: "get_withdrawal_pause_request",
+      args: [],
+    });
+    const requestedAt = Number(raw?.[0] ?? 0);
+    const activatesAt = Number(raw?.[1] ?? 0);
+    const pending = requestedAt > 0;
+    const now = await this.rpc.getLatestLedger();
+    return {
+      requestedAt,
+      activatesAt,
+      pending,
+      ledgersUntilActivation: pending ? Math.max(0, activatesAt - now) : 0,
+    };
+  }
+
+  /**
+   * The current minimum withdrawal amount, in the pool's native asset's
+   * smallest unit (`get_withdrawal_minimum`). Read it before proving: a
+   * withdrawal below it reverts with `WithdrawalBelowMinimum` after the proof
+   * has been generated and the fee paid.
+   */
+  async getWithdrawalMinimum(source: string): Promise<bigint> {
+    const minimum = await this.rpc.readNative<bigint | number | string>({
+      source,
+      contractId: this.contractId,
+      method: "get_withdrawal_minimum",
+      args: [],
+    });
+    return BigInt(minimum ?? 0);
+  }
+
+  /** Lifetime custody counters, in the pool's native asset's smallest unit. */
+  async getCustody(source: string): Promise<PoolCustody> {
+    const raw = await this.rpc.readNative<[bigint, bigint]>({
+      source,
+      contractId: this.contractId,
+      method: "get_custody",
+      args: [],
+    });
+    const totalDeposited = BigInt(raw?.[0] ?? 0);
+    const totalWithdrawn = BigInt(raw?.[1] ?? 0);
+    return { totalDeposited, totalWithdrawn, netHeld: totalDeposited - totalWithdrawn };
+  }
+
+  /**
+   * Commitment-tree capacity (`get_tree_capacity_info`). `currentCount` is
+   * bumped by deposits only, so it is a lower bound on the leaves in the tree;
+   * treat `utilization` as the headroom indicator, not an exact occupancy.
+   */
+  async getTreeCapacityInfo(source: string): Promise<TreeCapacityInfo> {
+    const raw = await this.rpc.readNative<Record<string, unknown>>({
+      source,
+      contractId: this.contractId,
+      method: "get_tree_capacity_info",
+      args: [],
+    });
+    const maxCapacity = Number(raw.max_capacity);
+    const currentCount = Number(raw.current_count);
+    return {
+      maxCapacity,
+      currentCount,
+      depth: Number(raw.depth),
+      lastUpdated: Number(raw.last_updated),
+      utilization: maxCapacity > 0 ? currentCount / maxCapacity : 0,
+    };
   }
 
   /**
@@ -239,48 +463,40 @@ export class PrivacyPool {
    * commitment at each state-tree index (`stateLeaves`, deposits + withdrawal
    * remainders) and the state index of each deposit in event order
    * (`depositIndices`, == ASP-tree order). Feed these into the withdrawal prover.
+   *
+   * The event read is bounded by a page cap (~20k events per topic). Reaching it
+   * means leaves are missing and any proof built from them would be against a
+   * root the pool never published, so the default is to raise
+   * `EventTruncationError`; pass `onTruncation: "return"` to get the
+   * partial leaves with `complete: false` and the cursors to continue from.
    */
-  async reconstructState(opts?: {
-    startLedger?: number;
-  }): Promise<{ stateLeaves: bigint[]; depositIndices: number[] }> {
-    const latest = await this.rpc.getLatestLedger();
-    let startLedger =
-      opts?.startLedger && opts.startLedger > 0
-        ? opts.startLedger
-        : Math.max(1, latest - POOL_EVENT_LOOKBACK);
-
+  async reconstructState(opts?: ReconstructStateOptions): Promise<PoolStateReconstruction> {
     const depositTopic = xdr.ScVal.scvSymbol("Deposit").toXDR("base64");
     const withdrawTopic = xdr.ScVal.scvSymbol("Withdraw").toXDR("base64");
     const byIndex = new Map<number, bigint>();
     const depositIndices: number[] = [];
+    const continuation: PoolStateContinuation = {};
+    let complete = true;
 
-    for (const [topic, isDeposit] of [
-      [depositTopic, true],
-      [withdrawTopic, false],
+    for (const [topic, kind, isDeposit] of [
+      [depositTopic, "Deposit", true],
+      [withdrawTopic, "Withdraw", false],
     ] as const) {
-      let cursor: string | undefined;
-      let prevCursor: string | undefined;
       const filters = [
         { type: "contract" as const, contractIds: [this.contractId], topics: [[topic, "*"]] },
       ];
       // getEvents pages ~10k ledgers at a time and returns empty pages before
       // the ones holding events; follow the cursor until it stops advancing.
-      for (let page = 0; page < 200; page++) {
-        let res;
-        try {
-          res = await this.rpc.getEvents(
-            cursor ? { cursor, filters, limit: 100 } : { startLedger, filters, limit: 100 },
-          );
-        } catch (err) {
-          const oldest = parseOldestLedgerFromRangeError(err);
-          if (!cursor && oldest != null && startLedger < oldest) {
-            startLedger = oldest;
-            res = await this.rpc.getEvents({ startLedger, filters, limit: 100 });
-          } else {
-            throw err;
-          }
-        }
-        for (const ev of res.events ?? []) {
+      for await (const page of paginateContractEvents({
+        invoker: this.rpc,
+        filters,
+        scope: `privacy-pool:${kind}`,
+        startLedger: opts?.startLedger,
+        lookback: POOL_EVENT_LOOKBACK,
+        maxPages: opts?.maxPages,
+        throwOnTruncation: opts?.onTruncation !== "return",
+      })) {
+        for (const ev of page.events) {
           const data = scValToNative(ev.value) as unknown[];
           if (isDeposit) {
             const commitment = BigInt(
@@ -296,9 +512,11 @@ export class PrivacyPool {
             byIndex.set(Number(data[2]), newCommitment);
           }
         }
-        cursor = res.cursor;
-        if (!cursor || cursor === prevCursor) break;
-        prevCursor = cursor;
+        if (page.truncated) {
+          complete = false;
+          if (isDeposit) continuation.deposit = page.continuationCursor;
+          else continuation.withdraw = page.continuationCursor;
+        }
       }
     }
 
@@ -306,6 +524,8 @@ export class PrivacyPool {
     const stateLeaves: bigint[] = [];
     for (let i = 0; i <= max; i++) stateLeaves.push(byIndex.get(i) ?? 0n);
     depositIndices.sort((a, b) => a - b);
-    return { stateLeaves, depositIndices };
+    return complete
+      ? { stateLeaves, depositIndices, complete }
+      : { stateLeaves, depositIndices, complete, continuation };
   }
 }

@@ -41,7 +41,8 @@ signer, including the blind-signing limitations of Soroban invocations.
 - `prepareTransfer(metaHex)` — one-time address + announcement params
 - `send({ to, amountXlm })`
 - `scan({ announcements, identity })` — pure-TS, returns matches
-- `scanIterator({ identity, startLedger? })` — async generator, streams matches from chain with a resumable cursor
+- `scanIterator({ identity, startLedger?, cursorKey?, maxPages?, allowTruncation? })` — async generator, streams matches from chain with a resumable, **per-identity** cursor; throws `EventTruncationError` rather than returning a partial scan
+- `scanCursorKey(identity)` — the `ScanStore` key an identity's cursor lives under
 - `sweep({ stealthPrivKey, destination, amountStroops })`
 
 ### `pool`
@@ -50,7 +51,10 @@ signer, including the blind-signing limitations of Soroban invocations.
 - `withdrawBatch({ notes, recipient, fee?, relayer? })` — proves + submits multiple notes to one recipient, reports per-note success/failure *(needs `artifacts`)*
 - `proveWithdraw({ note, recipient })` — reconstructs leaves from chain *(needs `artifacts`)*
 - `getDepositCount()`, `getRoots()`
-- `contracts.privacyPool.reconstructState({ startLedger })` — raw leaf reconstruction
+- `isDepositCovered({ stateRoot?, aspRoot? })` — can a withdrawal be proven right now? reports `reasons` (`no-state-root`, `unknown-asp-root`, `withdrawals-paused`, `tree-at-capacity`, …)
+- `isKnownStateRoot({ root })`, `isKnownAspRoot({ root })`
+- `isDepositsPaused()`, `isWithdrawalsPaused()`, `getWithdrawalPauseRequest()`, `getWithdrawalMinimum()`, `getCustody()`, `getTreeCapacityInfo()`
+- `contracts.privacyPool.reconstructState({ startLedger, maxPages, onTruncation })` — raw leaf reconstruction; `EventTruncationError` at the page cap unless `onTruncation: "return"`
 
 ### `reputation`
 - `attest({ schemaId, stealthAddressHash, fieldValues, fieldDefinitions, … })`

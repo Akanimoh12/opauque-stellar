@@ -17,7 +17,11 @@ const KIB = 1024;
 // Budgets are gzipped KiB, per ESM entry point. Raise deliberately (with a
 // note why) rather than silently when a change grows the bundle.
 const BUDGETS_KIB = {
-  "dist/index.js": 52,
+  // Raised 52 -> 62 KiB in #1004-#1007: the full relayer-registry binding
+  // (operator lifecycle, job/relayer reads, slashing) and the pool state reads
+  // behind `isDepositCovered`. This entry point ships unminified, so its doc
+  // comments are counted against the budget too.
+  "dist/index.js": 62,
   "dist/crypto/index.js": 26,
   "dist/relayer-protocol/index.js": 6,
 };

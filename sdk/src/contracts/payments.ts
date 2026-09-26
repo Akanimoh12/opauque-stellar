@@ -6,7 +6,7 @@ import { scValToNative, xdr } from "@stellar/stellar-sdk";
 import type { ContractInvoker } from "../rpc/client";
 import type { OpaqueSigner } from "../signer/index";
 import { addressToScVal, bytesToScVal, u64ToScVal } from "../rpc/scval";
-import { parseOldestLedgerFromRangeError } from "../rpc/diagnostics";
+import { paginateContractEvents } from "../rpc/events";
 import type { StealthAnnouncement } from "../crypto/index";
 import { assertValidStealthMetaAddress } from "../crypto/dksap";
 
@@ -16,11 +16,51 @@ export const SCHEME_ID_SECP256K1 = 1n;
 const ANNOUNCEMENT_EVENT_LOOKBACK = 16_000;
 const ANNOUNCEMENT_TOPIC = xdr.ScVal.scvSymbol("Announcement").toXDR("base64");
 
-/** A page of `Announcement` events, plus the highest ledger it covered. */
+/** A page of `Announcement` events, plus how far the scan can be trusted to have read. */
 export interface AnnouncementPage {
+  /**
+   * Announcements decoded from this page. Empty for a page over a quiet ledger
+   * range — such pages are yielded too, so a caller can advance a persisted
+   * cursor past a range that holds no transfers instead of rescanning it on
+   * every run.
+   */
   announcements: StealthAnnouncement[];
-  /** Highest ledger seen in this page — a resumable cursor for the next scan. */
+  /**
+   * Highest ledger represented in `announcements` — the ledger a match in this
+   * page belongs to (the scan's start ledger for a quiet page).
+   */
   ledger: number;
+  /**
+   * Highest ledger this scan has read through. Set on the last page of a
+   * drained scan, where it can be well past {@link ledger}: the quiet ledgers
+   * after the final announcement were read too. Persist a cursor from this
+   * value (`ledger + 1` on resume) to skip exactly the range already scanned.
+   */
+  endLedger: number;
+  /** True on the last page of a fully drained scan — nothing was left unread. */
+  complete: boolean;
+  /**
+   * True when the page cap stopped the scan with events still unread: this
+   * scan is **incomplete** and transfers may have been missed. Resume with
+   * `continuationCursor`, or from `ledger + 1` on a later scan.
+   */
+  truncated: boolean;
+  /** Opaque `getEvents` cursor to continue the truncated scan from. */
+  continuationCursor?: string;
+}
+
+/** Options for {@link StealthAnnouncer.scanEvents}. */
+export interface ScanEventsOptions {
+  /** First ledger to read (inclusive). Defaults to a lookback window. */
+  startLedger?: number;
+  /** Page cap before the scan reports truncation (default `EVENT_PAGE_LIMIT`). */
+  maxPages?: number;
+  /**
+   * Raise `EventTruncationError` at the page cap instead of yielding a
+   * final page marked `truncated` (default false). Either way the scan says so;
+   * this only chooses how.
+   */
+  throwOnTruncation?: boolean;
 }
 
 export class StealthRegistry {
@@ -114,21 +154,19 @@ export class StealthAnnouncer {
   /**
    * Stream `Announcement` events page-by-page instead of resolving only after
    * scanning the full range. `startLedger` is inclusive (as with the
-   * underlying `getEvents` call) — pass `ledger + 1` from a previous page to
-   * resume without re-reading (and re-yielding) its events. Stopping
-   * iteration early (`break` in a `for await`, or calling `.return()`) stops
-   * further `getEvents` calls — no dangling requests keep running after the
-   * consumer walks away.
+   * underlying `getEvents` call) — pass `endLedger + 1` from a completed page
+   * to resume without re-reading (and re-yielding) its events.
+   *
+   * One page is yielded per `getEvents` response, quiet ones included, so a
+   * scan over a range with no transfers still reports how far it read: take
+   * `endLedger` from the page with `complete: true` and a cursor persisted from
+   * it resumes after the whole scanned range.
+   *
+   * Stopping iteration early (`break` in a `for await`, or calling `.return()`)
+   * stops further `getEvents` calls — no dangling requests keep running after
+   * the consumer walks away.
    */
-  async *scanEvents(opts?: {
-    startLedger?: number;
-  }): AsyncGenerator<AnnouncementPage, void, unknown> {
-    const latest = await this.rpc.getLatestLedger();
-    let startLedger =
-      opts?.startLedger && opts.startLedger > 0
-        ? opts.startLedger
-        : Math.max(1, latest - ANNOUNCEMENT_EVENT_LOOKBACK);
-
+  async *scanEvents(opts?: ScanEventsOptions): AsyncGenerator<AnnouncementPage, void, unknown> {
     const filters = [
       {
         type: "contract" as const,
@@ -137,27 +175,17 @@ export class StealthAnnouncer {
       },
     ];
 
-    let cursor: string | undefined;
-    let prevCursor: string | undefined;
-    for (let page = 0; page < 200; page++) {
-      let res;
-      try {
-        res = await this.rpc.getEvents(
-          cursor ? { cursor, filters, limit: 100 } : { startLedger, filters, limit: 100 },
-        );
-      } catch (err) {
-        const oldest = parseOldestLedgerFromRangeError(err);
-        if (!cursor && oldest != null && startLedger < oldest) {
-          startLedger = oldest;
-          res = await this.rpc.getEvents({ startLedger, filters, limit: 100 });
-        } else {
-          throw err;
-        }
-      }
-
+    for await (const page of paginateContractEvents({
+      invoker: this.rpc,
+      filters,
+      scope: "stealth-announcer:Announcement",
+      startLedger: opts?.startLedger,
+      lookback: ANNOUNCEMENT_EVENT_LOOKBACK,
+      maxPages: opts?.maxPages,
+      throwOnTruncation: opts?.throwOnTruncation,
+    })) {
       const announcements: StealthAnnouncement[] = [];
-      let ledger = startLedger;
-      for (const ev of res.events ?? []) {
+      for (const ev of page.events) {
         const data = scValToNative(ev.value) as unknown[];
         const stealthAddress = Buffer.from(data[1] as Uint8Array).toString("hex");
         const ephemeralPubKey = Uint8Array.from(data[3] as Uint8Array);
@@ -167,14 +195,15 @@ export class StealthAnnouncer {
           ephemeralPubKey,
           viewTag: metadata[0] ?? 0,
         });
-        ledger = Math.max(ledger, ev.ledger);
       }
-
-      if (announcements.length > 0) yield { announcements, ledger };
-
-      cursor = res.cursor;
-      if (!cursor || cursor === prevCursor) break;
-      prevCursor = cursor;
+      yield {
+        announcements,
+        ledger: page.ledger,
+        endLedger: page.endLedger,
+        complete: page.complete,
+        truncated: page.truncated,
+        continuationCursor: page.continuationCursor,
+      };
     }
   }
 }

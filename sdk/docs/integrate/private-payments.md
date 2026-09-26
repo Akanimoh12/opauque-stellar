@@ -138,6 +138,15 @@ async function fetchAnnouncements(opaque) {
 ```
 
 Persist a scan cursor (via a `ScanStore`) so you only process new ledgers.
+`scanIterator` does this for you, and the cursor is **keyed per identity** — one
+client can watch many identities without one identity's scan resuming past
+another's payments. A range with no announcements still counts as scanned, so
+quiet ledgers are not re-read on every run.
+
+Scans are event-paged and bounded: a scan that hits the page cap raises
+`EventTruncationError` (transfers may be missing) with `lastScannedLedger` and
+`continuationCursor` to resume from, rather than reporting a partial result as a
+complete one. Pass `allowTruncation: true` only if a gap is acceptable to you.
 :::
 
 ## Step 5 — Recipient sweeps the funds

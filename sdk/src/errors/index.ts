@@ -149,9 +149,54 @@ export class PoolValidationError extends OpaqueError {
 }
 
 /**
+ * A contract-event scan stopped at its page cap with events left unread. The
+ * results are **incomplete** — a truncated announcement scan can miss payments
+ * and a truncated state reconstruction can produce a wrong Merkle root — so
+ * the SDK raises this instead of handing back partial data as if it were whole.
+ *
+ * Nothing at or below {@link lastScannedLedger} was skipped: resume there
+ * (`lastScannedLedger + 1`) or continue raw cursor paging from
+ * {@link continuationCursor}.
+ */
+export class EventTruncationError extends OpaqueError {
+  /** What was being scanned, e.g. `"privacy-pool:Deposit"`. */
+  readonly scope: string;
+  /** `getEvents` pages actually read before the cap stopped the scan. */
+  readonly pagesRead: number;
+  /** The cap that was hit. */
+  readonly pageCap: number;
+  /** Highest ledger read in full. */
+  readonly lastScannedLedger: number;
+  /** Opaque `getEvents` cursor to continue from, when the scan was cursor-paged. */
+  readonly continuationCursor?: string;
+
+  constructor(opts: {
+    scope: string;
+    pagesRead: number;
+    pageCap: number;
+    lastScannedLedger: number;
+    continuationCursor?: string;
+    cause?: unknown;
+  }) {
+    super(
+      `${opts.scope}: event scan stopped at the ${opts.pageCap}-page cap with events left ` +
+        `unread (${opts.pagesRead} pages read); results are incomplete — resume from ledger ` +
+        `${opts.lastScannedLedger + 1}.`,
+      "EVENT_TRUNCATION",
+      { cause: opts.cause },
+    );
+    this.scope = opts.scope;
+    this.pagesRead = opts.pagesRead;
+    this.pageCap = opts.pageCap;
+    this.lastScannedLedger = opts.lastScannedLedger;
+    this.continuationCursor = opts.continuationCursor;
+  }
+}
+
+/**
  * A capability that depends on a layer not yet wired in this build (e.g. the
- * proving layer, the WASM scanner, or the relayer gateway client). Thrown so the
- * surface is discoverable and the failure is explicit rather than silent.
+ * proving layer, the WASM scanner, or the relayer gateway client). Thrown so
+ * the surface is discoverable and the failure is explicit rather than silent.
  */
 export class NotWiredError extends OpaqueError {
   constructor(capability: string, hint?: string) {
