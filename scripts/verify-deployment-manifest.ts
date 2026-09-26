@@ -4,15 +4,16 @@
  * optionally checks env / WASM hashes.
  *
  * Usage:
- *   node scripts/verify-deployment-manifest.mjs
- *   node scripts/verify-deployment-manifest.mjs --network testnet --strict
- *   node scripts/verify-deployment-manifest.mjs --network mainnet --check-wasm
+ *   npm run verify:deployment
+ *   npx tsx scripts/verify-deployment-manifest.ts --network testnet --strict
+ *   npx tsx scripts/verify-deployment-manifest.ts --network mainnet --check-wasm
  */
 
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv from "ajv";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -25,14 +26,13 @@ const CONTRACT_KEYS = [
   "reputationVerifier",
   "schemaRegistry",
   "attestationEngineV2",
-  // Phase 5 privacy pool: a v3-capable groth16-verifier instance + the pool itself.
   "poolVerifier",
   "privacyPool",
 ];
 
 const OPTIONAL_CONTRACT_KEYS = [
-  // Phase 6 relayer market: present after `deploy --relayer`.
   "relayerRegistry",
+  "multisigAdmin",
 ];
 
 const ENV_SUFFIX = {
@@ -45,6 +45,7 @@ const ENV_SUFFIX = {
   poolVerifier: "POOL_VERIFIER_CONTRACT",
   privacyPool: "PRIVACY_POOL_CONTRACT",
   relayerRegistry: "RELAYER_REGISTRY_CONTRACT",
+  multisigAdmin: "MULTISIG_ADMIN_ADDRESS",
 };
 
 const PASSPHRASES = {
@@ -64,40 +65,17 @@ function loadSchema() {
 }
 
 function validateAgainstSchema(manifest, schema) {
-  const errors = [];
-  const required = schema.required ?? [];
-  for (const key of required) {
-    if (!(key in manifest)) {
-      errors.push(`missing required field: ${key}`);
-    }
+  const ajv = new Ajv({ useDefaults: false, strict: false });
+  const validate = ajv.compile(schema);
+  const valid = validate(manifest);
+
+  if (!valid) {
+    return (validate.errors || []).map((err) => {
+      const path = err.dataPath ? `${err.dataPath}` : "$";
+      return `${path}: ${err.message}`;
+    });
   }
-  const props = schema.properties ?? {};
-  for (const [key, propSchema] of Object.entries(props)) {
-    if (!(key in manifest)) continue;
-    const val = manifest[key];
-    const def = propSchema;
-    if (def.const !== undefined && val !== def.const) {
-      errors.push(`${key} must be ${JSON.stringify(def.const)} (got ${JSON.stringify(val)})`);
-    }
-    if (def.type === "string" && typeof val === "string") {
-      if (def.minLength !== undefined && val.length < def.minLength) {
-        errors.push(`${key} must be at least ${def.minLength} characters`);
-      }
-      if (def.pattern !== undefined && !new RegExp(def.pattern).test(val)) {
-        errors.push(`${key} does not match pattern ${def.pattern}`);
-      }
-    }
-    if (def.enum !== undefined && !def.enum.includes(val)) {
-      errors.push(`${key} must be one of [${def.enum.join(", ")}] (got ${JSON.stringify(val)})`);
-    }
-    if (def.type === "object" && typeof val === "object" && val !== null && def.properties) {
-      const subRequired = def.required ?? [];
-      for (const r of subRequired) {
-        if (!(r in val)) errors.push(`${key}.${r} is required`);
-      }
-    }
-  }
-  return errors;
+  return [];
 }
 
 const WASM_PATHS = {

@@ -91,12 +91,16 @@ test-relayer: ## Run relayer service tests
 test-asp: ## Run ASP service tests
 	npm test --prefix asp
 
+.PHONY: test-publisher
+test-publisher: ## Run publisher service tests
+	npm test --prefix publisher
+
 .PHONY: test-circuits
 test-circuits: ## Run Circom regression fixture tests (requires circom toolchain)
 	npm run test:circuits
 
 .PHONY: test
-test: test-contracts test-frontend test-sdk test-relayer test-asp ## Run all offline unit tests
+test: test-contracts test-frontend test-sdk test-relayer test-asp test-publisher ## Run all offline unit tests
 
 # ---------------------------------------------------------------------------
 # Lint / format targets
@@ -145,8 +149,12 @@ typecheck-relayer: ## TypeScript type-check the relayer service
 typecheck-asp: ## TypeScript type-check the ASP service
 	npm run typecheck --prefix asp
 
+.PHONY: typecheck-publisher
+typecheck-publisher: ## TypeScript type-check the publisher service
+	npm run typecheck --prefix publisher
+
 .PHONY: typecheck
-typecheck: typecheck-sdk typecheck-relayer typecheck-asp ## Run all TypeScript type-checks
+typecheck: typecheck-sdk typecheck-relayer typecheck-asp typecheck-publisher ## Run all TypeScript type-checks
 
 # ---------------------------------------------------------------------------
 # Verification / manifest targets
@@ -215,7 +223,7 @@ deploy-mainnet: ## [NETWORK] Deploy to mainnet — requires audit signoff gate
 ci: fmt lint-contracts test-contracts build-contracts build-scanner typecheck \
     lint-frontend test-frontend build-frontend \
     lint-sdk test-sdk build-sdk \
-    test-relayer test-asp \
+    test-relayer test-asp test-publisher \
     verify-deployment verify-artifacts notices-verify audit \
     ## Run all main CI checks locally (no network operations)
 	@echo ""

@@ -6,17 +6,17 @@
  * resulting contract IDs / WASM hashes / ledger into the canonical manifest at
  * `deployments/v1/<network>.json`, and leaves it in a strict-verifiable state.
  *
+ * Usage:
+ *   npm run deploy:testnet
+ *   npm run deploy:mainnet
+ *   npx tsx scripts/deploy-contracts.ts --network testnet --dry-run
+ *   npx tsx scripts/deploy-contracts.ts --network testnet --skip-build
+ *
  * Configuration (via root `.env` — see `.env.example`):
  *   STELLAR_NETWORK           testnet | mainnet            (or --network <net>)
  *   STELLAR_DEPLOYER          stellar-cli identity name    (preferred)
  *   STELLAR_DEPLOYER_SECRET   raw secret seed (S...)       (alternative)
  *   STELLAR_DEPLOYER_ADDRESS  G... address for the record  (optional)
- *
- * Usage:
- *   npm run deploy:testnet
- *   npm run deploy:mainnet
- *   node scripts/deploy-contracts.mjs --network testnet --dry-run
- *   node scripts/deploy-contracts.mjs --network testnet --skip-build
  *
  * Flags:
  *   --network <testnet|mainnet>   target network (default: $STELLAR_NETWORK or testnet)
