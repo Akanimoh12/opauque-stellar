@@ -179,7 +179,13 @@ export async function importEncryptedBackup(
 // in both directions (see the forward-compatibility test in
 // `sdk/tests/unit/backup.test.ts`).
 
-const VAULT_BACKUP_ITERATIONS = 100_000; // matches RecoveryManager.ITERATIONS
+// Issue #1010: Align vault backup KDF with ghost backup iterations.
+// Ghost entries use 600,000 iterations; vault backups (which hold notes and
+// master keys — strictly more sensitive material) must use at least the same
+// work factor. Old vault files produced with 100,000 iterations are still
+// decryptable via version migration in `decryptVaultBackup`.
+const VAULT_BACKUP_ITERATIONS = 600_000;
+const VAULT_BACKUP_LEGACY_ITERATIONS = 100_000;
 const VAULT_BACKUP_KEY_LENGTH = 256; // matches RecoveryManager.KEY_LENGTH
 const VAULT_BACKUP_SCHEMA = "https://opaque.cash/schemas/recovery-backup-v2.json";
 
@@ -210,7 +216,11 @@ export interface VaultBackupFile {
   nonce: string;
 }
 
-async function deriveVaultKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+async function deriveVaultKey(
+  password: string,
+  salt: Uint8Array,
+  iterations: number = VAULT_BACKUP_ITERATIONS,
+): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const passwordKey = await crypto.subtle.importKey(
     "raw",
@@ -223,7 +233,7 @@ async function deriveVaultKey(password: string, salt: Uint8Array): Promise<Crypt
     {
       name: "PBKDF2",
       salt: toArrayBuffer(salt),
-      iterations: VAULT_BACKUP_ITERATIONS,
+      iterations,
       hash: "SHA-256",
     },
     passwordKey,
@@ -275,6 +285,10 @@ export async function exportVaultBackup(
  * frontend's `RecoveryManager.exportBackup`. Missing/legacy fields default
  * to an empty array so older or partial backups still restore.
  *
+ * Handles version migration: old backups produced with 100,000 iterations
+ * (VAULT_BACKUP_LEGACY_ITERATIONS) are transparently re-derivated with the
+ * current 600,000 iteration count (issue #1010).
+ *
  * @throws if the checksum (when present) doesn't match, or if decryption
  * fails (wrong password or corrupt payload).
  */
@@ -297,7 +311,12 @@ export async function importVaultBackup(
     }
   }
 
-  const key = await deriveVaultKey(password, salt);
+  // Issue #1010: Detect legacy backups (formatVersion < 2 used 100k iterations)
+  // and try the current 600k iterations first, falling back to legacy.
+  const isLegacy = (backup.formatVersion ?? 1) < 2;
+  const key = isLegacy
+    ? await deriveVaultKey(password, salt, VAULT_BACKUP_ITERATIONS)
+    : await deriveVaultKey(password, salt);
 
   let parsed: Record<string, unknown>;
   try {
@@ -309,7 +328,22 @@ export async function importVaultBackup(
     parsed = JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, unknown>;
   } catch (err) {
     if (err instanceof Error && err.message.includes("Integrity check failed")) throw err;
-    throw new Error("Invalid password or corrupted backup file.");
+    // If decryption failed with current iterations, try legacy for old files
+    if (isLegacy) {
+      try {
+        const legacyKey = await deriveVaultKey(password, salt, VAULT_BACKUP_LEGACY_ITERATIONS);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: toArrayBuffer(nonce) },
+          legacyKey,
+          toArrayBuffer(ciphertext),
+        );
+        parsed = JSON.parse(new TextDecoder().decode(decrypted)) as Record<string, unknown>;
+      } catch {
+        throw new Error("Invalid password or corrupted backup file.");
+      }
+    } else {
+      throw new Error("Invalid password or corrupted backup file.");
+    }
   }
 
   return {

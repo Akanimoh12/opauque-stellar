@@ -264,7 +264,10 @@ export class RelayerGateway {
     opts?: GatewayRequestOptions,
   ): Promise<T> {
     const timeoutMs = opts?.timeoutMs ?? this.timeoutMs;
-    const maxAttempts = Math.min(this.retries, this.gatewayUrls.length);
+    // Retry per attempt budget, not per URL count — with a single gateway
+    // URL the old `Math.min(retries, urls.length)` formula yielded maxAttempts=1,
+    // making the documented linear-backoff retry never happen (issue #1008).
+    const maxAttempts = this.retries;
     const callerSignal = opts?.signal;
 
     if (callerSignal?.aborted) {
