@@ -1,10 +1,10 @@
 /**
  * Privacy pool. Deposit (derive a note's commitment and persist the note),
  * sweep a stealth account straight into a deposit, withdraw with a
- * precomputed proof, and read pool state (deposit count, roots).
- * Withdrawal proof *generation* needs the proving layer (snarkjs + circuit
- * artifacts) and is surfaced as a not-wired capability in this build: bring a
- * precomputed proof bundle to withdraw().
+ * precomputed proof, and read pool state (deposit count, roots, pause flags,
+ * custody, capacity). Withdrawal proof *generation* needs the proving layer
+ * (snarkjs + circuit artifacts) and is surfaced as a not-wired capability in
+ * this build: bring a precomputed proof bundle to withdraw().
  */
 import {
   bigIntToBytes32,
@@ -21,16 +21,57 @@ import type { SimulationReport } from "../rpc/client";
 import type { OpaqueSigner } from "../signer/index";
 import { keypairSigner } from "../signer/index";
 import { validateDepositAmount } from "./pool-validation";
+import { resolveReadSource } from "./read-source";
 import type { OpaqueClientContext } from "./context";
+import type {
+  PoolCustody,
+  ReconstructStateOptions,
+  TreeCapacityInfo,
+  WithdrawalPauseRequest,
+} from "../contracts/pool";
 
 /** A withdrawal proof bundle (everything except the public recipient/fee/relayer). */
 export type WithdrawProofBundle = PoolWithdrawProof;
+
+/** Why a deposit is not (yet) provable against the published roots. */
+export type DepositCoverageReason =
+  | "no-state-root"
+  | "no-asp-root"
+  | "unknown-state-root"
+  | "unknown-asp-root"
+  | "tree-at-capacity"
+  | "withdrawals-paused";
+
+/**
+ * Whether the published roots can carry a withdrawal for a deposit, composed
+ * from the pool's own views — see {@link PoolService.isDepositCovered}.
+ */
+export interface DepositCoverage {
+  /** True when the published state + ASP roots can prove a withdrawal for a deposit. */
+  covered: boolean;
+  /** The latest published state root, or null when none is published. */
+  stateRoot: Uint8Array | null;
+  /** The latest published ASP root, or null when none is published. */
+  aspRoot: Uint8Array | null;
+  /** The pool knows `stateRoot` as a published state root. */
+  stateRootKnown: boolean;
+  /** The pool knows `aspRoot` as a published ASP root. */
+  aspRootKnown: boolean;
+  /** Empty when `covered`; otherwise why the deposit cannot be proven yet. */
+  reasons: DepositCoverageReason[];
+  /** Commitment-tree capacity, for the headroom check. */
+  capacity: TreeCapacityInfo;
+  /** Whether deposits are currently accepted (a paused pool accepts no new deposits). */
+  depositsPaused: boolean;
+  /** Whether withdrawals are currently paused. */
+  withdrawalsPaused: boolean;
+}
 
 export class PoolService {
   constructor(private readonly ctx: OpaqueClientContext) {}
 
   private async source(explicit?: string): Promise<string> {
-    return explicit ?? (await this.ctx.requireSigner().publicKey());
+    return resolveReadSource(this.ctx, explicit);
   }
 
   /**
@@ -231,6 +272,124 @@ export class PoolService {
     return { state, asp };
   }
 
+  /** Whether the pool knows `root` as a published state root. */
+  async isKnownStateRoot(opts: { root: Uint8Array; source?: string }): Promise<boolean> {
+    return this.ctx.contracts.privacyPool.isKnownStateRoot({
+      root: opts.root,
+      source: await this.source(opts.source),
+    });
+  }
+
+  /** Whether the pool knows `root` as a published ASP root. */
+  async isKnownAspRoot(opts: { root: Uint8Array; source?: string }): Promise<boolean> {
+    return this.ctx.contracts.privacyPool.isKnownAspRoot({
+      root: opts.root,
+      source: await this.source(opts.source),
+    });
+  }
+
+  /** Whether new deposits are currently paused. */
+  async isDepositsPaused(opts?: { source?: string }): Promise<boolean> {
+    return this.ctx.contracts.privacyPool.isDepositsPaused(await this.source(opts?.source));
+  }
+
+  /** Whether withdrawals are currently paused (pause timelock elapsed). */
+  async isWithdrawalsPaused(opts?: { source?: string }): Promise<boolean> {
+    return this.ctx.contracts.privacyPool.isWithdrawalsPaused(await this.source(opts?.source));
+  }
+
+  /**
+   * The pending withdrawal-pause request and the countdown to when it takes
+   * effect, so a UI can warn before withdrawals stop.
+   */
+  async getWithdrawalPauseRequest(opts?: {
+    source?: string;
+  }): Promise<WithdrawalPauseRequest> {
+    return this.ctx.contracts.privacyPool.getWithdrawalPauseRequest(
+      await this.source(opts?.source),
+    );
+  }
+
+  /**
+   * The current minimum withdrawal amount, in the pool's native asset's
+   * smallest unit. Check it against a note's value *before* proving: too small
+   * a withdrawal reverts with `WithdrawalBelowMinimum` after the proof is built.
+   */
+  async getWithdrawalMinimum(opts?: { source?: string }): Promise<bigint> {
+    return this.ctx.contracts.privacyPool.getWithdrawalMinimum(await this.source(opts?.source));
+  }
+
+  /** Lifetime custody counters: deposited, withdrawn, and what is still held. */
+  async getCustody(opts?: { source?: string }): Promise<PoolCustody> {
+    return this.ctx.contracts.privacyPool.getCustody(await this.source(opts?.source));
+  }
+
+  /** Commitment-tree capacity, including the current utilization fraction. */
+  async getTreeCapacityInfo(opts?: { source?: string }): Promise<TreeCapacityInfo> {
+    return this.ctx.contracts.privacyPool.getTreeCapacityInfo(await this.source(opts?.source));
+  }
+
+  /**
+   * Can a withdrawal for a deposit be proven right now, against the roots the
+   * pool has published? Composes the pool's state views: reads the latest state
+   * and ASP roots, checks the contract actually knows both, and reports the
+   * pause flags and tree headroom alongside.
+   *
+   * Run this *before* `proveWithdraw` — proving is the expensive step, and an
+   * absent or unknown root means the resulting proof could not be submitted
+   * anyway. `reasons` is empty exactly when `covered` is true.
+   *
+   * Pass `stateRoot`/`aspRoot` to check specific roots (e.g. ones fetched
+   * earlier and cached) instead of the latest published pair.
+   */
+  async isDepositCovered(opts?: {
+    stateRoot?: Uint8Array;
+    aspRoot?: Uint8Array;
+    source?: string;
+  }): Promise<DepositCoverage> {
+    const source = await this.source(opts?.source);
+    const pool = this.ctx.contracts.privacyPool;
+    const [latestState, latestAsp, depositsPaused, withdrawalsPaused, capacity] =
+      await Promise.all([
+        pool.getLatestRoot({ source, kind: "state" }),
+        pool.getLatestRoot({ source, kind: "asp" }),
+        pool.isDepositsPaused(source),
+        pool.isWithdrawalsPaused(source),
+        pool.getTreeCapacityInfo(source),
+      ]);
+
+    const stateRoot = opts?.stateRoot ?? latestState;
+    const aspRoot = opts?.aspRoot ?? latestAsp;
+    const [stateRootKnown, aspRootKnown] = await Promise.all([
+      stateRoot ? pool.isKnownStateRoot({ source, root: stateRoot }) : Promise.resolve(false),
+      aspRoot ? pool.isKnownAspRoot({ source, root: aspRoot }) : Promise.resolve(false),
+    ]);
+
+    const reasons: DepositCoverageReason[] = [];
+    if (!stateRoot) reasons.push("no-state-root");
+    else if (!stateRootKnown) reasons.push("unknown-state-root");
+    if (!aspRoot) reasons.push("no-asp-root");
+    else if (!aspRootKnown) reasons.push("unknown-asp-root");
+    if (withdrawalsPaused) reasons.push("withdrawals-paused");
+    // The pool reverts a deposit past `max_capacity`; at the ceiling no new
+    // commitment fits, so nothing further can be proven against it either.
+    if (capacity.maxCapacity > 0 && capacity.currentCount >= capacity.maxCapacity) {
+      reasons.push("tree-at-capacity");
+    }
+
+    return {
+      covered: reasons.length === 0,
+      stateRoot,
+      aspRoot,
+      stateRootKnown,
+      aspRootKnown,
+      reasons,
+      capacity,
+      depositsPaused,
+      withdrawalsPaused,
+    };
+  }
+
   /**
    * Generate a full-withdrawal proof for a note. Requires an artifact resolver
    * (`new OpaqueClient({ artifacts })`). The pool leaves are reconstructed from
@@ -245,6 +404,8 @@ export class PoolService {
     scope?: number;
     stateLeaves?: bigint[];
     depositIndices?: number[];
+    /** How to read the leaves from chain when they are not supplied. */
+    reconstruct?: ReconstructStateOptions;
     /** Testing only: inject a stub in place of `snarkjs`. */
     snarkjs?: Parameters<typeof provePoolWithdraw>[0]["snarkjs"];
   }): Promise<PoolWithdrawProof> {
@@ -258,6 +419,7 @@ export class PoolService {
     if (!stateLeaves || !depositIndices) {
       const state = await this.ctx.contracts.privacyPool.reconstructState({
         startLedger: this.ctx.config.startLedger,
+        ...opts.reconstruct,
       });
       stateLeaves = state.stateLeaves;
       depositIndices = state.depositIndices;

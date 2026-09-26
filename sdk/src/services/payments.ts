@@ -14,6 +14,7 @@ import {
   parseXlmToStroops,
   scanAnnouncements,
   stealthMetaAddressToHex,
+  bytesToHex,
   type Hex,
   type ScanMatch,
   type StealthAnnouncement,
@@ -26,6 +27,18 @@ export interface StealthIdentity {
   spendingKey: Uint8Array;
   metaAddress: Uint8Array;
   metaHex: Hex;
+}
+
+/**
+ * The `ScanStore` key a scan for `identity` persists its cursor under.
+ * Keyed by viewing key so one client can watch many identities without their
+ * cursors colliding — identity A's scan can no longer resume past ledger N and
+ * silently skip identity B's payments.
+ */
+export function scanCursorKey(
+  identity: Pick<StealthIdentity, "viewingKey">,
+): string {
+  return `vk:${bytesToHex(identity.viewingKey)}`;
 }
 
 export class PaymentsService {
@@ -129,28 +142,44 @@ export class PaymentsService {
 
   /**
    * Stream announcement matches from chain instead of waiting for the full
-   * range to resolve: each match yields as soon as it is found, and the
-   * *last processed* ledger persists to the configured `ScanStore` after
-   * every page so a caller can resume mid-range later without re-reading (and
-   * re-yielding) events already seen. Stop early (`break` out of the
-   * `for await`) to release the scan without reading further pages.
+   * range to resolve: each match yields as soon as it is found, and the scan
+   * position persists to the configured `ScanStore` after every page so a
+   * caller can resume later without re-reading (and re-yielding) events already
+   * seen. Stop early (`break` out of the `for await`) to release the scan
+   * without reading further pages.
+   *
+   * The cursor is **per identity** (keyed by viewing key, see
+   * {@link scanCursorKey}), so several identities can be watched from one
+   * client without one identity's scan resuming past another's.
+   *
+   * The cursor also advances through ranges that hold no announcements: a page
+   * that comes back quiet still counts as scanned, and the last page of a
+   * drained scan persists `endLedger` — the end of the whole scanned range, not
+   * just the last transfer in it. Without that, a quiet range would be re-read
+   * on every single run, forever.
+   *
+   * @throws EventTruncationError when the event page cap is hit with events
+   * left unread (transfers may be missing). The persisted cursor is left at
+   * the last fully-read page, so the next run resumes exactly there. Pass
+   * `allowTruncation` to accept a partial scan instead of failing.
    */
-  async *scanIterator(opts: {
-    identity: Pick<StealthIdentity, "viewingKey" | "spendingKey">;
-    /** Resume from this ledger instead of the persisted cursor. */
-    startLedger?: number;
-    /** Skip reading/writing the persisted cursor (default false). */
-    skipCursor?: boolean;
-  }): AsyncGenerator<ScanMatch & { ledger: number }> {
+  async *scanIterator(
+    opts: ScanIteratorOptions,
+  ): AsyncGenerator<ScanMatch & { ledger: number }> {
+    const cursorKey = opts.cursorKey ?? scanCursorKey(opts.identity);
     let startLedger = opts.startLedger;
     if (startLedger == null && !opts.skipCursor) {
-      const cursor = await this.ctx.scanStore.getCursor();
+      const cursor = await this.ctx.scanStore.getCursor(cursorKey);
       // The stored cursor is the last *processed* ledger; resume after it so
       // its events are not re-fetched (`getEvents`' startLedger is inclusive).
       if (cursor != null) startLedger = cursor + 1;
     }
 
-    for await (const page of this.ctx.contracts.stealthAnnouncer.scanEvents({ startLedger })) {
+    for await (const page of this.ctx.contracts.stealthAnnouncer.scanEvents({
+      startLedger,
+      maxPages: opts.maxPages,
+      throwOnTruncation: !opts.allowTruncation,
+    })) {
       for (const match of scanAnnouncements({
         announcements: page.announcements,
         viewingKey: opts.identity.viewingKey,
@@ -158,7 +187,38 @@ export class PaymentsService {
       })) {
         yield { ...match, ledger: page.ledger };
       }
-      if (!opts.skipCursor) await this.ctx.scanStore.setCursor(page.ledger);
+      if (!opts.skipCursor) {
+        // A page that drained the scan read every ledger up to `endLedger` —
+        // quiet ones included — so persist that rather than the last transfer's
+        // ledger, and the next run starts after the whole range.
+        await this.ctx.scanStore.setCursor(
+          page.complete ? page.endLedger : page.ledger,
+          cursorKey,
+        );
+      }
     }
   }
+}
+
+/** Options for {@link PaymentsService.scanIterator}. */
+export interface ScanIteratorOptions {
+  identity: Pick<StealthIdentity, "viewingKey" | "spendingKey">;
+  /** Resume from this ledger instead of the persisted cursor. */
+  startLedger?: number;
+  /** Skip reading/writing the persisted cursor (default false). */
+  skipCursor?: boolean;
+  /**
+   * Cursor key to persist under. Defaults to this identity's own key
+   * ({@link scanCursorKey}); override only to share one cursor across
+   * identities that scan the same range.
+   */
+  cursorKey?: string;
+  /** Event page cap before the scan is treated as truncated (default 200). */
+  maxPages?: number;
+  /**
+   * Return a partial scan instead of throwing {@link EventTruncationError} when
+   * the page cap is hit (default false). Only safe when the caller can detect
+   * the gap some other way — a truncated scan may have missed transfers.
+   */
+  allowTruncation?: boolean;
 }

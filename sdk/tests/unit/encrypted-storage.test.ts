@@ -108,6 +108,19 @@ describe("EncryptedScanStore", () => {
     await store.setCursor(123_456);
     expect(await store.getCursor()).toBe(123_456);
   });
+
+  it("keeps one cursor per identity, with the unkeyed slot separate", async () => {
+    const store = new EncryptedScanStore(memoryBackend(), "pw");
+    await store.setCursor(10, "vk:aa");
+    await store.setCursor(20, "vk:bb");
+    expect(await store.getCursor("vk:aa")).toBe(10);
+    expect(await store.getCursor("vk:bb")).toBe(20);
+    // Unkeyed callers keep their own slot rather than colliding with either.
+    expect(await store.getCursor()).toBeNull();
+    await store.setCursor(30);
+    expect(await store.getCursor("vk:aa")).toBe(10);
+    expect(await store.getCursor()).toBe(30);
+  });
 });
 
 describe("localStorageBackend (browser target)", () => {

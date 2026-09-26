@@ -141,6 +141,72 @@ if ((await opaque.relayer.jobStatus(draft.jobIdHex)) === "submitted") {
 }
 ```
 
+## Run a relayer (operator side)
+
+The registry is a contract, so being a relayer needs no separate daemon
+identity — the operator account *is* the identity, and its key can live in an
+HSM. The whole lifecycle is in the SDK:
+
+```ts
+// 1. Register once, escrowing the initial stake (>= config.minimumStake).
+await opaque.relayer.register({
+  x25519Pubkey,                      // the pubkey creators encrypt payloads to
+  endpoint: "https://relayer.example",
+  stake: 100n * 10_000_000n,
+});
+
+// 2. Top up free stake as needed.
+await opaque.relayer.addStake({ amount: 50n * 10_000_000n });
+
+// 3. Take a job (bonds the fee against your stake) and submit it — the
+//    registry re-hashes the payload and forwards the withdrawal to the pool.
+await opaque.relayer.acceptJob({ jobId });
+await opaque.relayer.submitPoolWithdraw({ jobId, ...withdrawalPayload });
+
+// 4. Unstake is two-phase: request, then withdraw once the cooldown elapses.
+await opaque.relayer.requestUnstake({ amount: 50n * 10_000_000n });
+const { isUnlockable, unstakeUnlockLedger } = await opaque.relayer.getUnbondingStatus();
+if (isUnlockable) await opaque.relayer.withdrawStake();
+```
+
+A runnable end-to-end version is in
+[`examples/relayer-operator.mjs`](https://github.com/collinsadi/opauque-stellar/blob/main/sdk/examples/relayer-operator.mjs).
+
+Reads need no signer at all — a watcher or a relayer node can hold a public
+client and pass the account to simulate from:
+
+```ts
+const readonly = new OpaqueClient({ network: "testnet" });
+const config = await readonly.relayer.getRegistryConfig({ source: someFundedAccount });
+const record = await readonly.relayer.getRelayer({ source: someFundedAccount, operator });
+const job = await readonly.relayer.getJob({ source: someFundedAccount, jobId });
+const statuses = await readonly.relayer.jobStatuses({ source: someFundedAccount });
+```
+
+Compare `job.status` against the codes read from the contract
+(`jobStatuses()`) rather than a hardcoded list, so a registry that reorders its
+statuses cannot be misread as "unknown".
+
+### Slashing
+
+Anyone can report an offense; the slashed stake (bonded first, then free) is
+paid to the reporter:
+
+```ts
+await opaque.relayer.reportSlash({
+  proof: { relayer, offense: "DoubleSign", evidence, timestamp: BigInt(Date.now() / 1000), reporter },
+  slashAmount: 10n * 10_000_000n,
+});
+
+const record = await opaque.relayer.getSlashingRecord({ relayer });  // null when clean
+const bps = await opaque.relayer.getSlashingPercentage({ relayer }); // basis points of original stake
+```
+
+Only offenses the contract can verify are accepted — `DoubleSign` (two distinct
+Ed25519 signatures over one 32-byte digest) and `InvalidSignature`. Timing and
+ordering offenses (censorship, frontrunning) are governance matters, not
+on-chain slashes.
+
 ## What a relayer can and cannot do
 
 - **Cannot** change the recipient, amount, or proof (all bound into the ZK

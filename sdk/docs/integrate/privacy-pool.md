@@ -45,17 +45,52 @@ store them somewhere the user controls.
 
 ## Step 2 — Wait for the roots to cover your deposit
 
-Withdrawals prove against the **published** state + ASP roots. An indexer/ASP
-publishes those roots; until they include your deposit, a withdrawal can't be
-proven. Poll until both roots are present:
+Withdrawals prove against the **published** state + ASP roots, and the pool
+itself has to *know* those roots. `isDepositCovered` checks both — plus the
+pause flags and tree headroom — in one read, so you never build a witness
+against roots the pool will reject:
+
+```ts
+const coverage = await opaque.pool.isDepositCovered();
+if (!coverage.covered) {
+  switch (coverage.reasons[0]) {
+    case "no-state-root":
+    case "no-asp-root":
+      // The ASP/indexer hasn't published a root covering recent deposits yet.
+      break;
+    case "unknown-state-root":
+    case "unknown-asp-root":
+      // A root arrived that the contract does not recognise — usually a fork,
+      // a stale read, or an ASP publishing ahead of the pool.
+      break;
+    case "withdrawals-paused":
+      // A pause request has passed its timelock. Warn the user; nothing can be
+      // withdrawn until it lifts.
+      break;
+    case "tree-at-capacity":
+      // No commitment fits any more, so nothing new can be proven either.
+      break;
+  }
+  await new Promise((r) => setTimeout(r, 5000));
+  // …poll again.
+}
+```
+
+To see the underlying values — or to check roots you cached earlier rather than
+the latest published pair — read them directly:
 
 ```ts
 const roots = await opaque.pool.getRoots();
 // roots.state / roots.asp — Uint8Array (published) or null (not yet)
-if (!roots.state || !roots.asp) {
-  // ASP/indexer hasn't published a root covering recent deposits yet — wait and retry.
-}
+const known = await opaque.pool.isKnownStateRoot({ root: roots.state! });
+const pause = await opaque.pool.getWithdrawalPauseRequest(); // countdown to a pending pause
+const minimum = await opaque.pool.getWithdrawalMinimum();    // reject too-small withdrawals early
+const capacity = await opaque.pool.getTreeCapacityInfo();    // headroom, as a utilization fraction
+const custody = await opaque.pool.getCustody();              // lifetime deposited / withdrawn / held
 ```
+
+All of these take an optional `source` (the account to simulate the read from),
+so a read-only server can serve them without holding the user's key.
 
 ## Step 3 — Generate the withdrawal proof
 
@@ -75,6 +110,13 @@ const proof = await opaque.pool.proveWithdraw({
 `proveWithdraw` reads chain events each call. If you already have the
 reconstructed leaves, pass `stateLeaves` + `depositIndices` to skip the read —
 get them from `opaque.contracts.privacyPool.reconstructState({ startLedger })`.
+
+That reconstruction is event-paged, so it is bounded. If a pool's history
+outgrows the cap, `reconstructState` raises `EventTruncationError` rather than
+returning a tree with holes in it (a wrong Merkle root looks like a right one).
+Widen the read with `reconstruct: { maxPages }`, or ask for the partial state
+explicitly with `onTruncation: "return"`, which hands back
+`complete: false` plus the `continuation` cursors to resume from.
 :::
 
 ## Step 4 — Withdraw
@@ -109,11 +151,12 @@ const opaque = new OpaqueClient({
 // 1. deposit
 const { note } = await opaque.pool.deposit({ amountXlm: "5" });
 
-// 2. wait for roots
-let roots = await opaque.pool.getRoots();
-while (!roots.state || !roots.asp) {
+// 2. wait for the published roots to be provable against
+for (;;) {
+  const coverage = await opaque.pool.isDepositCovered();
+  if (coverage.covered) break;
+  console.log("not provable yet:", coverage.reasons.join(", "));
   await new Promise((r) => setTimeout(r, 5000));
-  roots = await opaque.pool.getRoots();
 }
 
 // 3. prove + 4. withdraw
@@ -127,6 +170,10 @@ await opaque.pool.withdraw({ proof, recipient: PAYOUT, noteCommitment: note.comm
   commitment. Partial withdrawals are a planned follow-up.
 - `NotWiredError` from `proveWithdraw` → no `artifacts` resolver configured.
 - `RootUnavailableError` / empty roots → the ASP/indexer hasn't published a root
-  covering your deposit yet; retry.
+  covering your deposit yet; retry. `isDepositCovered()` reports the same thing
+  without throwing, and says which precondition is missing.
+- `EventTruncationError` from `reconstructState` / `scanIterator` → the event
+  page cap stopped a read with events left unread, so the result would be
+  incomplete. `lastScannedLedger` / `continuationCursor` say where to resume.
 - `ContractError` on `withdraw` → e.g. nullifier already spent (note reused) or a
   stale root; inspect `.contractCode`.

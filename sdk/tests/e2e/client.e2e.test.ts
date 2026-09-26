@@ -17,6 +17,7 @@ import {
   computeStealthAddressAndViewTag,
   NotWiredError,
   SignerError,
+  scanCursorKey,
   RpcError,
   TESTNET_DEPLOYMENT,
   type ContractInvoker,
@@ -180,8 +181,10 @@ describe("payments service", () => {
     expect(matches[0].ledger).toBe(100);
     expect(matches[1].stealthStellarAddress).toBe(mine2.stealthStellarAddress);
     expect(matches[1].ledger).toBe(200);
-    // Cursor persisted after each page, so a later scan can resume from here.
-    expect(await client.scanStore.getCursor()).toBe(200);
+    // Cursor persisted per identity, so a later scan of *this* identity can
+    // resume from here (and another identity's scan stays independent).
+    expect(await client.scanStore.getCursor(scanCursorKey(identity))).toBe(200);
+    expect(await client.scanStore.getCursor(scanCursorKey(other))).toBeNull();
   });
 
   it("scanIterator resumes from the persisted cursor without re-yielding the same page", async () => {
@@ -199,7 +202,7 @@ describe("payments service", () => {
     const firstRun = [];
     for await (const match of client.payments.scanIterator({ identity })) firstRun.push(match);
     expect(firstRun.length).toBe(1);
-    expect(await client.scanStore.getCursor()).toBe(100);
+    expect(await client.scanStore.getCursor(scanCursorKey(identity))).toBe(100);
 
     // Resuming should request events starting after ledger 100, not at it —
     // otherwise ledger 100's announcement would be re-fetched and re-yielded.
@@ -214,7 +217,7 @@ describe("payments service", () => {
     for await (const match of client.payments.scanIterator({ identity })) secondRun.push(match);
     expect(secondRun.length).toBe(1);
     expect(secondRun[0].stealthStellarAddress).toBe(mine2.stealthStellarAddress);
-    expect(await client.scanStore.getCursor()).toBe(200);
+    expect(await client.scanStore.getCursor(scanCursorKey(identity))).toBe(200);
     const secondRequest = inv.eventsRequests[inv.eventsRequests.length - 1] as { startLedger?: number };
     expect(secondRequest.startLedger).toBe(101);
   });

@@ -4,5 +4,6 @@
  */
 export * from "./scval";
 export * from "./diagnostics";
+export * from "./events";
 export * from "./client";
 export * from "./fixture";

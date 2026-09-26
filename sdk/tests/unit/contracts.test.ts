@@ -29,6 +29,10 @@ class CaptureInvoker implements ContractInvoker {
   last?: InvokeOptions;
   lastRead?: { source: string; contractId: string; method: string };
   reads: Record<string, unknown> = {};
+  /** Canned `getEvents` pages, consumed in order (one per call; an `Error` entry is thrown). */
+  eventPages: (rpc.Api.GetEventsResponse | Error)[] = [];
+  eventsCallCount = 0;
+  latestLedgerValue = 0;
   async invoke(opts: InvokeOptions): Promise<string> {
     this.last = opts;
     return "TXHASH";

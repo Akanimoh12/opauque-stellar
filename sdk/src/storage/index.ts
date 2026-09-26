@@ -21,10 +21,18 @@ export interface VaultStore {
   saveGhost(entry: GhostEntryLike): Promise<void>;
 }
 
-/** Persistence for the announcement-scan cursor (last processed ledger). */
+/**
+ * Persistence for the announcement-scan cursor (last processed ledger),
+ * **keyed per identity** — one client watching several stealth identities
+ * stores one cursor per identity, so a scan for one never resumes past
+ * another's payments. Omitting the key reads and writes the unkeyed slot,
+ * which is where a single-identity caller (or a pre-keying store) lives.
+ */
 export interface ScanStore {
-  getCursor(): Promise<number | null>;
-  setCursor(ledger: number): Promise<void>;
+  /** Last processed ledger for `identity`, or null when it has never been scanned. */
+  getCursor(identity?: string): Promise<number | null>;
+  /** Record the last processed ledger for `identity`. */
+  setCursor(ledger: number, identity?: string): Promise<void>;
 }
 
 /** In-memory {@link NoteStore}. Notes are keyed by commitment. */
@@ -53,14 +61,17 @@ export class MemoryVaultStore implements VaultStore {
   }
 }
 
-/** In-memory {@link ScanStore}. */
+/**
+ * In-memory {@link ScanStore}. One cursor per identity key, so a client
+ * watching several identities keeps each one's position separately.
+ */
 export class MemoryScanStore implements ScanStore {
-  private cursor: number | null = null;
-  async getCursor(): Promise<number | null> {
-    return this.cursor;
+  private cursors = new Map<string, number>();
+  async getCursor(identity = ""): Promise<number | null> {
+    return this.cursors.get(identity) ?? null;
   }
-  async setCursor(ledger: number): Promise<void> {
-    this.cursor = ledger;
+  async setCursor(ledger: number, identity = ""): Promise<void> {
+    this.cursors.set(identity, ledger);
   }
 }
 
