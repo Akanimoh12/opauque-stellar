@@ -85,4 +85,5 @@ npm run test:circuits
 cd circuits && npm run test:regression -- --compile --witness-only
 ```
 
-See [RELEASE_NOTES.md](../RELEASE_NOTES.md) for published hashes per release.
+See [CHANGELOG.md](../CHANGELOG.md) for the entries that accompany each release, and
+GitHub release assets for the published hashes per release.

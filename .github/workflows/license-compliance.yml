@@ -2,7 +2,8 @@ name: License Compliance
 
 # Verifies bundled WASM/circuit dependencies stay covered by
 # THIRD_PARTY_NOTICES.md, and that Rust crate licenses stay inside the
-# deny.toml allow list (#470). See .github/CONTRIBUTING.md § 7.7.
+# deny.toml allow list (#470). See .github/CONTRIBUTING.md
+# "Third-party notices (license compliance)" under § 13.
 
 on:
   pull_request:

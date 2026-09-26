@@ -183,6 +183,22 @@ function messageOf(err: unknown): string {
 }
 
 /**
+ * Whether `err` is a *definitive* "the resource does not exist" answer (HTTP 404).
+ *
+ * This is deliberately narrower than `!isRetryableRpcError(err)`: a 429, a 5xx, a
+ * timeout, or a dropped socket is an **unknown**, not a negative. Callers use this
+ * to choose between two mutually exclusive on-ledger branches, so mistaking a
+ * transient failure for "absent" silently builds the wrong one.
+ *
+ * Retry envelopes are unwrapped first, because a provider-fallback layer reports
+ * its verdict on the wrapper (which carries no HTTP status) rather than on the
+ * transport error that actually decided the outcome.
+ */
+export function isNotFoundError(err: unknown): boolean {
+  return extractStatus(underlyingError(err)) === 404;
+}
+
+/**
  * Decide whether `err` is transient under `policy`. A recognised status code wins
  * outright: a 400 is a real rejection even if its message happens to say "network".
  */

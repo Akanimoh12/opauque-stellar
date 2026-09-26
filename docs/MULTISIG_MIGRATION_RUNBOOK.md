@@ -159,17 +159,14 @@ addresses.
 
 ## Step 6 — Update downstream documentation
 
-- [ ] [`AGENT_KEY_COMPROMISE_RUNBOOK.md`](AGENT_KEY_COMPROMISE_RUNBOOK.md):
-      confirm it doesn't assume a single admin key can unilaterally act where
-      a migrated registry now requires multisig approval (it currently
-      focuses on the agent key specifically, not the admin key, so this is
-      likely a no-op — verify rather than assume).
 - [ ] [`ADMIN_KEY_COMPROMISE_PLAYBOOKS.md`](ADMIN_KEY_COMPROMISE_PLAYBOOKS.md):
-      this playbook already documents both the pre- and post-migration
-      topologies generically ("Deployer / delegated multisig" — see its
-      per-contract table); after this migration completes, update the
-      testnet row(s) from "not yet migrated" to record the actual deployed
-      multisig address, so an incident responder doesn't have to
+      confirm it doesn't assume a single admin key can unilaterally act where
+      a migrated registry now requires multisig approval. It already documents
+      both the pre- and post-migration topologies generically ("Deployer /
+      delegated multisig" — see its per-contract table), so the topology check
+      is likely a no-op — verify rather than assume. After this migration
+      completes, update the testnet row(s) from "not yet migrated" to record the
+      actual deployed multisig address, so an incident responder doesn't have to
       cross-reference the manifest during an actual incident.
 - [ ] `deployments/v1/testnet.json`: confirm `scripts/migrate-to-multisig-admin.ts`
       wrote the `multisig` block correctly (address, signers, threshold,

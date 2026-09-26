@@ -21,6 +21,7 @@ import { recordContractCall, recordRpcError } from "./monitoring";
 import { parseHorizonBalanceToStroops } from "./decimalParser";
 import { simulateAndDecode } from "./sorobanErrors";
 import {
+  RpcRequestError,
   RpcRetriesExhaustedError,
   SimulationFailedError,
   TransactionFailedError,
@@ -29,6 +30,8 @@ import {
 } from "./errors";
 import {
   getDefaultRetryPolicy,
+  extractStatus,
+  isNotFoundError,
   isRetryableRpcError,
   resolveRetryPolicy,
   runWithRetryPolicy,
@@ -77,7 +80,23 @@ export async function accountExists(publicKey: string): Promise<boolean> {
   try {
     await loadAccount(publicKey);
     return true;
-  } catch {
+  } catch (err) {
+    // Only a definitive 404 means "no such account". Every other failure (429,
+    // 5xx, timeout, DNS) is an *unknown*, and reporting `false` for those makes
+    // callers build a `createAccount` for an account that already exists — which
+    // burns the fee and then fails on-ledger with `ALREADY_EXIST`. Propagate
+    // instead so the UI can offer a retry.
+    if (!isNotFoundError(err)) {
+      const cause = underlyingError(err);
+      throw new RpcRequestError({
+        message: "Horizon.loadAccount failed",
+        cause: err,
+        provider: "Horizon",
+        method: "loadAccount",
+        status: extractStatus(cause),
+        retryable: isRetryableRpcError(cause),
+      });
+    }
     return false;
   }
 }

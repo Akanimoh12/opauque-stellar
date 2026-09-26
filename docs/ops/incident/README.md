@@ -8,7 +8,7 @@ improvised under pressure.
 
 These templates are the *communications* layer. For vulnerability reporting and
 the technical response process, see [`SECURITY.md`](../../../SECURITY.md) and
-[`docs/testnet-slos.md`](../testnet-slos.md) (off-chain service health
+[`docs/testnet-slos.md`](../../testnet-slos.md) (off-chain service health
 objectives that often precede or accompany an incident).
 
 ## Severity levels
@@ -38,7 +38,7 @@ objectives that often precede or accompany an incident).
    of an incident response message, even to "fix" the problem. That instruction
    pattern is indistinguishable from a phishing attempt. Recovery actions are
    initiated by the team via audited multisig processes (see
-   [`docs/MULTISIG_ADMIN.md`](../MULTISIG_ADMIN.md)), not by asking users to act.
+   [`docs/MULTISIG_ADMIN.md`](../../MULTISIG_ADMIN.md)), not by asking users to act.
 3. **State what users should NOT do** as prominently as what's happening (e.g.
    "do not send funds to any stealth address generated in the last N hours until
    this notice is lifted, and do not deposit into the privacy pool").

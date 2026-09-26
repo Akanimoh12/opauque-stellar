@@ -29,8 +29,9 @@ each other:
   two are tightly coupled.
 - **Circuits** (`circuits/`) are the Circom Groth16 circuits whose verifying keys
   are bound into the on-chain verifier and the artifact manifest.
-- **Frontend** (`frontend/`), **SDK** (`sdk/`), **relayer** (`relayer/`), and **ASP**
-  service (`asp/`) are the clients and services built on top of the contracts.
+- **Frontend** (`frontend/`), **SDK** (`sdk/`), **relayer** (`relayer/`), **ASP**
+  service (`asp/`), and **publisher** (`publisher/`) are the clients and services
+  built on top of the contracts.
 - **Deployments** (`deployments/`) and **artifacts** (`artifacts/`) are the source of
   truth for deployed addresses and pinned binary hashes. Many checks exist purely to
   keep these honest.
@@ -51,6 +52,7 @@ every binary that ships (scanner WASM, circuit keys) is hash-pinned.
 | `sdk/` | TypeScript client SDK, published as `@opaquecash/stellar` | Node + tsup |
 | `relayer/` | Relayer market service (`@opaquecash/relayer`) | Node |
 | `asp/` | Association Set Provider service (`@opaquecash/asp`) | Node |
+| `publisher/` | Reputation root publisher service (`@opaquecash/reputation-publisher`) | Node |
 | `scripts/` | TypeScript tooling (deploy, verify, artifacts), run via `tsx` | Node + tsx |
 | `deployments/` | Canonical contract manifests (source of truth) | JSON |
 | `artifacts/` | Pinned artifact manifest (scanner WASM and circuit hashes) | JSON |
@@ -66,24 +68,43 @@ scripts, their purpose, usage, and whether they are release- or deploy-critical.
 
 The CI matrix (`.github/workflows/ci.yml`) tests against these exact versions.
 Contributors should reproduce failures locally with the same combo before pushing.
+The **Job** column names the `ci.yml` job that pins each version, so you can tell
+which combination a given failure came from.
 
-| Component | Tool | Supported versions |
-|-----------|------|--------------------|
-| Frontend / SDK / Services | Node.js | **20**, **22** |
-| Contracts / Scanner | Rust | **stable** |
-| Scanner WASM targets | wasm32 | `wasm32-unknown-unknown`, `wasm32v1-none` |
+| Component | Tool | Versions tested | Job |
+|-----------|------|-----------------|-----|
+| Frontend | Node.js | **20**, **22** | `frontend` |
+| SDK | Node.js | **20** | `sdk` |
+| Circuits | Node.js | **20** | `circuits` |
+| Supply chain / notices / a11y | Node.js | **20** | `supply-chain`, plus the standalone workflows |
+| Services (`relayer`, `asp`, `publisher`) | Docker image build | n/a — **no Node version matrix** | `service-images` |
+| Contracts + poseidon crates | Rust | **stable** | `contracts`, `poseidon-crates` |
+| Scanner | Rust | **1.94.1** (pinned by `scanner/rust-toolchain.toml`, not `stable`) | `scanner`, `scanner-crate` |
+| Scanner WASM target | wasm32 | `wasm32-unknown-unknown` | `scanner`, `scanner-benchmark-gate` |
+| Contracts WASM target | wasm32 | `wasm32v1-none` | `contracts-reproducible-build.yml` |
 
-- [Rust](https://rustup.rs/) (stable) with both WASM targets:
+Two things worth internalising:
+
+- **Node 22 is tested for the frontend only.** Every other Node job runs on 20.
+- **The scanner is not on `stable`.** `scanner/rust-toolchain.toml` pins 1.94.1, and
+  the scanner WASM build passes `--mode no-install` to `wasm-pack` specifically so
+  the pinned toolchain produces the bytes `artifacts/manifest.json` expects. Building
+  the scanner on a different Rust version changes the output hash and fails the
+  artifact check.
+
+- [Rust](https://rustup.rs/) with both WASM targets:
   ```bash
   rustup target add wasm32-unknown-unknown wasm32v1-none
   rustup component add rustfmt clippy
   ```
+  (`wasm32-unknown-unknown` builds the scanner; `wasm32v1-none` builds the contracts.)
 - [Stellar CLI](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup).
   You can install a pinned version via `scripts/install-stellar-cli.sh` for a
   matching toolchain.
-- [Node.js](https://nodejs.org/) **20** or **22** (LTS lines). Other major
-  versions are not tested in CI and may break.
-- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) for the scanner.
+- [Node.js](https://nodejs.org/) **20**, or **22** (LTS) for frontend work. Other
+  major versions are not tested in CI and may break.
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) 0.14.0 for the scanner
+  (`scripts/install-wasm-pack.sh` installs the pinned version).
 - `cargo-audit` and `cargo-deny` for supply-chain checks:
   ```bash
   cargo install cargo-audit cargo-deny --locked
@@ -152,11 +173,22 @@ npx tsx scripts/verify-artifact-manifest.ts --scanner --strict
 
 ## 6. The required checks (must pass before pushing)
 
-All checks below run automatically on every PR via
-[`.github/workflows/ci.yml`](workflows/ci.yml). The matrix tests each component
-against the supported version combos (see § 3); a failure names the exact version
-so you can reproduce locally. Run the checks relevant to your change locally
-before you push.
+Most of the checks below run automatically on every PR via
+[`.github/workflows/ci.yml`](workflows/ci.yml), which tests each component against the
+supported version combos (see § 3) so a failure names the exact version and you can
+reproduce it locally. Run the checks relevant to your change locally before you push.
+Not everything lives in `ci.yml`, and several jobs are gated on changed paths:
+
+- Checks in other workflows: `contracts-reproducible-build.yml` (`stellar contract
+  build` + WASM hash comparison), `accessibility-audit.yml`, `license-compliance.yml`,
+  `codeql.yml`, and `dependency-audit.yml` (§ 12).
+- **Path-gated jobs in `ci.yml`** skip entirely unless you touch their paths, so a
+  green run does not mean they were exercised: `circuits` (`circuits/**`),
+  `scanner-crate` (`scanner/**`), and `poseidon-crates`
+  (`contracts/opaque-poseidon/**`, `contracts/poseidon-bench/**`). If your change
+  touches one of those, run that job's commands locally — CI will not tell you it
+  passed.
+- `sdk`, `service-images`, `workflow-lint`, and `supply-chain` are unconditioned.
 
 A root `Makefile` wraps every command below so you do not have to memorise flags.
 Run `make help` to see all targets, or `make ci` to run all offline checks at once.
@@ -169,8 +201,14 @@ setup guide and troubleshooting section.
 cargo fmt --all -- --check                              # formatting
 cargo clippy --workspace --all-targets -- -D warnings   # zero warnings
 cargo test --workspace --locked                         # unit + property tests
-stellar contract build                                  # release WASM builds
 ```
+
+The `poseidon-crates` job runs the same three commands separately in
+`contracts/opaque-poseidon/` and `contracts/poseidon-bench/`, but only when those
+paths change. The release WASM build (`stellar contract build`) and the
+`wasm32v1-none` hash comparison are **not** in `ci.yml` — they run in
+[`contracts-reproducible-build.yml`](workflows/contracts-reproducible-build.yml)
+inside the pinned image (see § 7.1).
 
 - **Warnings are errors.** Clippy runs with `-D warnings`. Do not introduce new ones.
 - If you must silence a lint, do it narrowly (`#[allow(...)]` on the item) with a
@@ -186,16 +224,30 @@ stellar contract build                                  # release WASM builds
 ```bash
 npm run build:scanner
 npx tsx scripts/verify-artifact-manifest.ts --scanner --strict
+npx tsx scripts/verify-artifact-manifest.ts --vk-binding --strict
+npx tsx scripts/check-scanner-byte-stability.ts
 ```
 
-The scanner WASM hash is pinned in `artifacts/manifest.json`. If you change scanner
-code, rebuild and update the manifest in the **same** PR (see Section 7.2).
+The last two are separate CI steps and are easy to miss: the vk-binding check
+verifies the verifying keys embedded in the contracts still match the manifest, and
+the byte-stability check rebuilds and compares hashes to catch a build that is not
+reproducible. The `scanner-crate` job additionally runs fmt/clippy/test inside
+`scanner/`, but only on `scanner/**` changes.
+
+Build on the pinned `scanner/rust-toolchain.toml` toolchain (1.94.1), not `stable` —
+the hash pinned in `artifacts/manifest.json` was produced by that version. If you
+change scanner code, rebuild and update the manifest in the **same** PR (see § 7.2).
 
 ### 6c. Circuits
 
 ```bash
 npm run test:circuits     # deterministic regression fixtures
 ```
+
+CI runs this as `npx tsx circuits/test/regression.ts --witness-only`, and **only on
+`circuits/**` changes**. It is a witness-only pass, so it does not compile the
+circuits; if you changed circuit logic, follow § 7.3 rather than relying on this
+check alone.
 
 Circuit logic changes require regenerating fixtures and updating the artifact
 manifest and verifying-key binding. Large artifacts are fetched from releases, never
@@ -208,9 +260,13 @@ cd frontend
 npm ci
 npm run lint              # ESLint, zero errors
 npx tsc -b --noEmit       # typecheck
+npm test                  # vitest run
 npm run build             # production build
-npx vitest run            # unit tests
 ```
+
+CI runs lint, typecheck, test, and build on **Node 20 and Node 22** — this is the
+only component tested on both. The `accessibility-audit.yml` workflow adds a
+Playwright/axe-core audit on `frontend/**` changes (see § 13).
 
 ### 6e. SDK
 
@@ -219,19 +275,33 @@ Run from `sdk/`:
 ```bash
 cd sdk
 npm ci
-npm run lint
 npm run typecheck
 npm run build
 npm run check:exports     # publint + are-the-types-wrong
 npm test
 ```
 
-### 6f. Services (relayer and ASP)
+CI additionally runs `npm run lint` and an address-drift gate
+(`npx tsx scripts/generate-sdk-addresses.ts --check`) that fails if
+`sdk/src/config/addresses.ts` has drifted from the deployment manifests — commit the
+regenerated file with any deploy that changes contract IDs (§ 8). The SDK job is
+**Node 20 only**, not on the 20/22 matrix.
+
+### 6f. Services (relayer, ASP, publisher)
 
 ```bash
-( cd relayer && npm ci && npm run typecheck && npm test )
-( cd asp && npm ci && npm run typecheck && npm test )
+( cd relayer   && npm ci && npm run typecheck && npm test )
+( cd asp       && npm ci && npm run typecheck && npm test )
+( cd publisher && npm ci && npm run typecheck && npm test )
 ```
+
+**CI does not run these.** There is no typecheck or test job for the services in any
+workflow. The only service job in `ci.yml` is `service-images`, which builds the
+`asp`, `publisher`, and `relayer` Docker images and asserts each runs as a non-root
+user with a `HEALTHCHECK` declared. So service typecheck and unit tests are
+maintainer-run (`make test-relayer test-asp test-publisher`, all included in
+`make ci`) and are **not** PR-blocking — keep them green regardless, since nothing
+else will catch a regression.
 
 ### 6g. Supply chain and manifests
 
@@ -240,6 +310,11 @@ npm run verify:deployment           # manifest schema + no legacy Solana/devnet 
 cargo audit
 cargo deny check
 ```
+
+The `supply-chain` job in `ci.yml` runs `cargo audit` and `cargo deny check` on every
+PR; its two `npm audit` steps are `continue-on-error: true` and **cannot** fail a PR.
+`cargo deny check licenses` and `notices:verify` live in `license-compliance.yml`
+(§ 13), and the `scanner-audit` job in `dependency-audit.yml` is PR-blocking (§ 12).
 
 ---
 
@@ -318,7 +393,10 @@ npm run test:circuits
 npm run verify:artifacts
 ```
 
-Verifying-key changes must be reflected in both the artifact manifest and the
+Remember that the `circuits` CI job is **witness-only** (`--witness-only`, no
+`circom` compile) and only runs on `circuits/**` changes, so the compile-and-fixture
+path above is yours to verify locally — CI will not catch a toolchain drift on its
+own. Verifying-key changes must be reflected in both the artifact manifest and the
 on-chain verifier binding.
 
 ### 7.4 Frontend
@@ -335,11 +413,13 @@ published types and entry points stay correct.
 
 ### 7.6 Services
 
-The relayer market (`relayer/`) and the Association Set Provider (`asp/`) are Node
-services. Keep `typecheck` and `test` green; both have smoke scripts (for example
-`npm run smoke:market` in the relayer) for manual end-to-end checks.
+The relayer market (`relayer/`), the Association Set Provider (`asp/`), and the
+reputation publisher (`publisher/`) are Node services. Keep `typecheck` and `test`
+green — **no workflow runs them**, so nothing in CI will catch a regression (see
+§ 6f); `relayer` and `asp` also have smoke scripts (for example `npm run smoke:market`
+in the relayer) for manual end-to-end checks.
 
-Testnet operations for these services (plus the reputation publisher) are held to the
+Testnet operations for these services are held to the
 SLOs in [`docs/testnet-slos.md`](../docs/testnet-slos.md), measured by `npm run
 slo:report`. A change that materially affects publish/completion latency should call
 that out in the PR description.
@@ -415,7 +495,7 @@ npm run deploy:testnet -- --dry-run # preview (no broadcast)
 ## 11. Security
 
 Do **not** open public issues for vulnerabilities. Follow the disclosure process in
-[`SECURITY.md`](SECURITY.md). See [`DISCLAIMER.md`](DISCLAIMER.md) for the
+[`SECURITY.md`](../SECURITY.md). See [`DISCLAIMER.md`](../DISCLAIMER.md) for the
 experimental status and privacy limitations of this software.
 
 ---
@@ -435,13 +515,14 @@ don't lag and upgrades don't pile up into risky big-bang bumps.
 | Medium | Patch within 30 days | Bundled into the next routine batch unless actively exploited |
 | Low / informational | Next routine batch | No dedicated SLA |
 
-[`dependency-audit.yml`](workflows/dependency-audit.yml) remains a weekly
-scheduled job (non-PR-blocking) that runs `cargo audit` / `cargo deny check`
-and `npm audit` across the root and `frontend/` workspaces, so an advisory
-published against an already-merged dependency is still caught within the
-windows above instead of going unnoticed indefinitely. Wiring routine
-dependency scanning itself into PR-blocking CI remains a natural follow-up.
-See Section 13 for the checks that *are* PR-blocking today.
+Within [`dependency-audit.yml`](workflows/dependency-audit.yml), the `cargo-audit`
+and `npm-audit` jobs are weekly-scheduled and non-PR-blocking: they run
+`cargo audit` / `cargo deny check` and `npm audit` across the root and `frontend/`
+workspaces, so an advisory published against an already-merged dependency is still
+caught within the windows above instead of going unnoticed indefinitely. Wiring
+routine dependency scanning itself into PR-blocking CI remains a natural follow-up.
+The one exception is the `scanner-audit` job, which *is* PR-blocking — see the
+next section. See Section 13 for the full workflow table.
 
 [`dependabot.yml`](dependabot.yml) opens security-update pull requests
 immediately on advisory publication, independent of the batching schedule
@@ -470,7 +551,7 @@ unnoticed.
 
 The full supply-chain policy — hash-pinning of scanner WASM and circuit
 artifacts, reproducible builds, and the manifest verification gate — is
-documented in [`docs/supply-chain-policy.md`](docs/supply-chain-policy.md).
+documented in [`docs/supply-chain-policy.md`](../docs/supply-chain-policy.md).
 
 ### Batching strategy per workspace
 
@@ -498,17 +579,19 @@ rigor.
 
 | Workflow | Trigger | Blocking? | What it checks |
 |:---------|:--------|:----------|:----------------|
-| [`dependency-audit.yml`](workflows/dependency-audit.yml) | Weekly schedule, manual | No | `cargo audit` / `cargo deny check` / `npm audit` across root + `frontend/` (§ 12). |
+| [`ci.yml`](workflows/ci.yml) | Every PR to `main`, every push to `main` | Yes | The main matrix (§ 6): frontend, contracts, circuits, scanner, scanner benchmark gate, poseidon crates, SDK, service images, and supply chain. The `circuits`, `scanner-crate`, and `poseidon-crates` jobs are path-gated. |
+| [`dependency-audit.yml`](workflows/dependency-audit.yml) | Every PR to `main`, weekly schedule, manual | **Partly** | `cargo audit` / `cargo deny check` / `npm audit` across root + `frontend/` are non-PR-blocking (`if: github.event_name != 'pull_request'`, § 12). The `scanner-audit` job — including the explicit wasm-bindgen advisory check — **is** PR-blocking. |
+| [`codeql.yml`](workflows/codeql.yml) | Every PR to `main`, weekly schedule, manual | No (reports alerts) | CodeQL `security-extended` static analysis for `javascript-typescript` and `rust`. Alert triage responsibilities are in [`SECURITY.md`](../SECURITY.md). |
 | [`contracts-reproducible-build.yml`](workflows/contracts-reproducible-build.yml) | PR touching `contracts/**`, `Cargo.{toml,lock}`, `soroban.toml`, `deployments/v1/**` | Yes | Rebuilds the contracts workspace in the pinned image from `docker/reproducible-build.Dockerfile` and fails on a WASM hash mismatch against `deployments/v1/*.json`. See [docs/REPRODUCIBLE_BUILDS.md](../docs/REPRODUCIBLE_BUILDS.md). |
-| [`license-compliance.yml`](workflows/license-compliance.yml) | PR touching dependency manifests (`Cargo.lock`, `deny.toml`, workspace `package.json`/`package-lock.json`, `THIRD_PARTY_NOTICES.md`) | Yes | `cargo deny check licenses` plus `npm run notices:verify` — fails if `THIRD_PARTY_NOTICES.md` is stale or a new dependency's license isn't permissive-allowed or explicitly reviewed. See § 7.7 below. |
+| [`license-compliance.yml`](workflows/license-compliance.yml) | PR touching dependency manifests (`Cargo.lock`, `scanner/Cargo.lock`, `deny.toml`, `circuits/`, `frontend/` package manifests, `THIRD_PARTY_NOTICES.md`) | Yes | `cargo deny check licenses` plus `npm run notices:verify` — fails if `THIRD_PARTY_NOTICES.md` is stale or a new dependency's license isn't permissive-allowed or explicitly reviewed. See *Third-party notices* below. |
 | [`accessibility-audit.yml`](workflows/accessibility-audit.yml) | PR touching `frontend/**` | Yes | axe-core audit of the frontend's public views; fails on new critical/serious violations. See § 7.4. |
 | [`stale.yml`](workflows/stale.yml) | Daily schedule, manual | N/A (bot triage, not a check) | Labels and closes inactive issues/PRs. See § 14. |
 
-Everything above except `dependency-audit.yml` is PR-blocking. All of them are
-scoped to the paths they actually validate, so an unrelated change (docs-only,
-for example) won't run or block on them.
+The `contracts-reproducible-build.yml`, `license-compliance.yml`, and
+`accessibility-audit.yml` workflows are scoped to the paths they actually validate,
+so an unrelated change (docs-only, for example) won't run or block on them.
 
-### 7.7 Third-party notices (license compliance)
+### Third-party notices (license compliance)
 
 If you add, remove, or upgrade a dependency that ends up in a *distributed
 binary* — a Rust crate pulled into `contracts/` or `scanner/`, anything in
