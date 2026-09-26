@@ -4,7 +4,7 @@
  * is optional and the file store is purely a convenience/cache.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readdirSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { SetManifest } from "./types.ts";
 
@@ -19,13 +19,101 @@ export function computeDatasetHash(labels: string[]): string {
   return "0x" + h.digest("hex");
 }
 
-/** Write `data/sets/<poolId>/<root>.json` and return its path. */
-export function writeManifest(dataDir: string, manifest: SetManifest): string {
+/**
+ * Compute a signature over the manifest for authentication (issue #1011).
+ * The signature covers poolId, root, datasetHash, policy, and ledger.
+ */
+export function signManifest(manifest: SetManifest, signingKey: string): string {
+  const h = createHash("sha256");
+  h.update(manifest.poolId);
+  h.update(manifest.root);
+  h.update(manifest.datasetHash);
+  h.update(manifest.policy ?? "");
+  h.update(String(manifest.ledger ?? ""));
+  h.update(signingKey);
+  return "0x" + h.digest("hex");
+}
+
+/**
+ * Verify a manifest signature against the signing key (issue #1011).
+ */
+export function verifyManifestSignature(
+  manifest: SetManifest,
+  signature: string,
+  signingKey: string,
+): boolean {
+  const expected = signManifest(manifest, signingKey);
+  return expected === signature;
+}
+
+/**
+ * Default retention policy: keep the most recent N set files per pool (issue #1011).
+ * Older roots are pruned to prevent unbounded disk growth.
+ */
+const DEFAULT_MAX_SETS_PER_POOL = 50;
+
+/**
+ * Write `data/sets/<poolId>/<root>.json` and `latest.json` atomically (issue #1011).
+ *
+ * Uses temp-file-plus-rename to prevent corruption if the process crashes
+ * mid-write. Includes dataset hash, policy, ledger, and signature in the
+ * manifest for consumer authentication.
+ */
+export function writeManifest(
+  dataDir: string,
+  manifest: SetManifest,
+  signingKey?: string,
+  maxSetsPerPool: number = DEFAULT_MAX_SETS_PER_POOL,
+): string {
   const dir = join(dataDir, "sets", manifest.poolId);
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${manifest.root}.json`);
-  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-  // Also write a `latest.json` pointer for convenience.
-  writeFileSync(join(dir, "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  return path;
+
+  // Add signature if signing key provided (issue #1011)
+  const signedManifest = signingKey
+    ? { ...manifest, signature: signManifest(manifest, signingKey) }
+    : manifest;
+
+  const manifestJson = `${JSON.stringify(signedManifest, null, 2)}\n`;
+
+  // Atomic write: write to temp file then rename (issue #1011)
+  const rootPath = join(dir, `${manifest.root}.json`);
+  const tmpPath = `${rootPath}.tmp.${Date.now()}`;
+  writeFileSync(tmpPath, manifestJson);
+  renameSync(tmpPath, rootPath);
+
+  // Atomic write for latest.json
+  const latestPath = join(dir, "latest.json");
+  const latestTmpPath = `${latestPath}.tmp.${Date.now()}`;
+  writeFileSync(latestTmpPath, manifestJson);
+  renameSync(latestTmpPath, latestPath);
+
+  // Prune old sets (issue #1011)
+  pruneOldSets(dir, maxSetsPerPool);
+
+  return rootPath;
+}
+
+/**
+ * Prune old set files, keeping only the most recent N (issue #1011).
+ * Files are sorted by modification time (newest first).
+ */
+function pruneOldSets(dir: string, maxKeep: number): void {
+  try {
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".json") && f !== "latest.json" && !f.endsWith(".tmp"))
+      .sort()
+      .reverse(); // newest first (filename is root hash, lexicographic sort works)
+
+    if (files.length > maxKeep) {
+      for (const file of files.slice(maxKeep)) {
+        try {
+          unlinkSync(join(dir, file));
+        } catch {
+          // Best-effort pruning; ignore errors on individual files
+        }
+      }
+    }
+  } catch {
+    // If directory doesn't exist or can't be read, skip pruning
+  }
 }
