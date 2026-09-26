@@ -1,6 +1,6 @@
 # ADR-0003: Relayer market with shared gossip hub
 
-**Date:** 2024-02-01  
+**Date:** 2026-06-15  
 **Status:** Accepted  
 **Context:** Privacy-pool withdrawal submission without linking wallet to relayer
 
@@ -93,11 +93,25 @@ Compared to direct wallet-to-relayer:
 
 ## Implementation notes
 
-**Shared hub:**
-- HTTP endpoints for job posting, bid submission, and payload retrieval
-- In-memory or persistent storage of recent jobs and bids (pruned after expiry)
+**Shared hub (current — HTTP):**
+
+The hub is implemented as an HTTP service (not libp2p). This was an explicit
+simplicity choice: HTTP works through firewalls and NAT without client-side
+routing machinery, and the gossip transport abstraction is designed so a
+libp2p or pubsub backend can replace the in-memory HTTP transport later
+without protocol-level changes. The current gateway topic is
+`opaque/stellar/jobs/v1` over HTTPS.
+
+- REST endpoints for job posting, bid submission, and payload retrieval
+- In-memory storage of recent jobs and bids, pruned after expiry
 - Rate limiting to prevent spam
-- Optional: encryption of job metadata server-side (key held by wallet)
+- Job metadata is blinded on the wire; the hub sees job IDs and bid commitments
+  but not the withdrawal amount or recipient (those travel in the encrypted
+  payload)
+
+See [ADR-0008](0008_http_gossip_over_libp2p.md) for the full rationale for
+choosing HTTP over libp2p and the conditions under which the transport
+decision should be revisited.
 
 **Wallet-side:**
 1. Create on-chain escrow in the relayer registry
@@ -108,7 +122,7 @@ Compared to direct wallet-to-relayer:
 6. POST encrypted payload to the hub (retrievable by winning relayer ID)
 
 **Relayer-side:**
-1. Poll the hub for new job advertisements
+1. Poll (HTTP GET) the hub for new job advertisements
 2. For each job, fetch the on-chain details from the relayer registry
 3. If credentials match, post a bid with a cryptographic commitment
 4. If selected, retrieve the encrypted payload from the hub

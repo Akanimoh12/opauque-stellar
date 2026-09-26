@@ -1,6 +1,6 @@
 # ADR-0004: Non-custodial Freighter wallet requirement
 
-**Date:** 2024-01-10  
+**Date:** 2026-07-24  
 **Status:** Accepted  
 **Context:** User funds and key management without backend custody
 
