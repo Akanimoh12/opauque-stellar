@@ -8,6 +8,7 @@ const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
 export default defineConfig({
   entry: {
     index: "src/index.ts",
+    node: "src/node.ts",
     "crypto/index": "src/crypto/index.ts",
     "relayer-protocol/index": "src/relayer-protocol/index.ts",
     // Standalone Node worker_threads / browser Worker entry point for the

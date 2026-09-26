@@ -66,6 +66,53 @@ export class StealthRegistry {
       signer: opts.signer,
     });
   }
+
+  /**
+   * Resolve a registered G-address to its stealth meta-address.
+   *
+   * Returns the meta-address bytes if the address has registered keys,
+   * or `null` if no registration exists.
+   */
+  async resolve(opts: {
+    address: string;
+    source: string;
+  }): Promise<Uint8Array | null> {
+    try {
+      const result = await this.rpc.readNative<Uint8Array>({
+        source: opts.source,
+        contractId: this.contractId,
+        method: "resolve",
+        args: [addressToScVal(opts.address)],
+      });
+      return result ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a registered G-address at a historical ledger.
+   *
+   * Returns the meta-address bytes if the address had registered keys
+   * at the given ledger, or `null` otherwise.
+   */
+  async resolveHistorical(opts: {
+    address: string;
+    source: string;
+    ledger: number;
+  }): Promise<Uint8Array | null> {
+    try {
+      const result = await this.rpc.readNative<Uint8Array>({
+        source: opts.source,
+        contractId: this.contractId,
+        method: "resolve_historical",
+        args: [addressToScVal(opts.address), u64ToScVal(BigInt(opts.ledger))],
+      });
+      return result ?? null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export class StealthAnnouncer {

@@ -5,4 +5,5 @@
 export * from "./scval";
 export * from "./diagnostics";
 export * from "./client";
-export * from "./fixture";
+// fixture.ts imports node:fs and is Node-only — exported via the
+// `@opaquecash/stellar/node` subpath, not here (issue #1000).

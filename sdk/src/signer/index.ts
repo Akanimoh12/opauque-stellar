@@ -13,7 +13,7 @@ export interface SignerContext {
 }
 
 /** Low-level callback form: sign a transaction XDR, return the signed XDR. */
-export type SignTxFn = (xdr: string) => Promise<string>;
+export type SignTxFn = (xdr: string, ctx: SignerContext) => Promise<string>;
 
 export interface OpaqueSigner {
   /** Stellar public key (G-address) this signer controls. */
@@ -60,9 +60,9 @@ export function callbackSigner(opts: {
   return {
     publicKey: () =>
       typeof opts.publicKey === "function" ? opts.publicKey() : opts.publicKey,
-    async signTransaction(xdr) {
+    async signTransaction(xdr, ctx) {
       try {
-        return await opts.signTransaction(xdr);
+        return await opts.signTransaction(xdr, ctx);
       } catch (cause) {
         throw new SignerError("Callback signer failed", { cause });
       }
@@ -70,3 +70,5 @@ export function callbackSigner(opts: {
     signMessage: opts.signMessage,
   };
 }
+
+export { freighterSigner, stellarWalletsKitSigner } from "./adapters";

@@ -68,6 +68,16 @@
         "types": "./dist/relayer-protocol/index.d.cts",
         "default": "./dist/relayer-protocol/index.cjs"
       }
+    },
+    "./node": {
+      "import": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      },
+      "require": {
+        "types": "./dist/node.d.cts",
+        "default": "./dist/node.cjs"
+      }
     }
   },
   "scripts": {
